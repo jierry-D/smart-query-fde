@@ -82,6 +82,22 @@ function switchView(id) { document.querySelectorAll('.view').forEach(v => v.clas
 function setActiveNav(id) { document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active')); const el = gid(id); if (el) el.classList.add('active'); }
 
 // ── Chat ──
+
+// Event delegation for clarify option clicks
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.clarify-opt');
+  if (!btn) return;
+  const action = btn.dataset.action;
+  const value = btn.dataset.value;
+  if (action === 'refine') {
+    gid('queryInput').value = value;
+    doQuery();
+  } else if (action === 'command') {
+    gid('queryInput').value = value;
+    doQuery();
+  }
+});
+
 async function doQuery() {
   const inp = gid('queryInput'); const q = inp.value.trim(); if (!q) return; inp.value = '';
   if (!token) { showLogin(); return; }
@@ -124,6 +140,7 @@ function renderResponse(d) {
     case 'table': html += renderTable(d); break;
     case 'error': html += renderError(d); break;
     case 'pending': html += renderPending(d); break;
+    case 'clarify': html += renderClarify(d); break;
     case 'metric_list': html += renderMetricsList(d); break;
     case 'snapshot_list': html += renderSnapshotsList(d); break;
     case 'db_status': html += renderDbStatus(d); break;
@@ -259,6 +276,18 @@ function renderPending(d) {
     <div style="font-weight:600;color:var(--c-warning)">⚠️ ${esc(d.metric_name)}</div>
     <div style="font-size:.8rem;color:var(--c-text-secondary);margin-top:4px">${esc(d.hint||d.explanation||'该指标数据尚未接入')}</div>
   </div>`;
+}
+
+function renderClarify(d) {
+  let h = `<div style="padding:12px 16px;background:#eef2ff;border-left:4px solid var(--c-primary);border-radius:0 8px 8px 0">
+    <div style="font-weight:600;color:var(--c-primary);margin-bottom:8px">💡 ${esc(d.question)}</div>`;
+  (d.options||[]).forEach(o => {
+    const icon = o.action === 'command' ? '📋' : o.action === 'refine' ? '🔍' : '';
+    h += `<button class="clarify-opt" data-action="${esc(o.action)}" data-value="${esc(o.value)}">${icon} ${esc(o.label)}</button> `;
+  });
+  if (d.hint) h += `<div style="font-size:.75rem;color:var(--c-text-secondary);margin-top:8px">${esc(d.hint)}</div>`;
+  h += '</div>';
+  return h;
 }
 
 function renderMetricsList(d) {

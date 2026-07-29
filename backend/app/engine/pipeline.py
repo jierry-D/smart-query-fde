@@ -65,6 +65,13 @@ class NL2SQLPipeline:
         # Stage 1: NER
         self._stage1_ner(ctx)
 
+        # Stage 1.5: 反问澄清检测
+        clarification = self._check_clarification(ctx)
+        if clarification:
+            clarification["elapsed_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
+            clarification["process"] = ctx.stages
+            return clarification
+
         # Stage 2: Time
         self._stage2_time(ctx)
 
@@ -126,6 +133,107 @@ class NL2SQLPipeline:
         ctx.entities = ner.extract(ctx.query)
         ctx.add_stage("NER实体提取", "done", (time.perf_counter() - t1) * 1000,
                       f"意图={ctx.entities.get('intent', '?')}, 筛选={len(ctx.entities.get('filters', []))}条")
+
+    # ── Clarification ──
+
+    def _check_clarification(self, ctx: PipelineContext) -> dict | None:
+        """检测是否需要反问澄清。需要则返回 clarify 响应，否则返回 None"""
+        t1 = time.perf_counter()
+        entities = ctx.entities
+        completeness = entities.get("completeness", {})
+
+        # 构建 entity_tags (从 NER filters 转换)
+        tags = []
+        for f in entities.get("filters", []):
+            tags.append({"type": "filter", "label": f"{f['field']}={f['value']}"})
+        if entities.get("group_by"):
+            tags.append({"type": "group", "label": f"按{entities['group_by']}"})
+
+        # 检测时间词 (在 Stage 2 时间解析之前)
+        TIME_KEYWORDS = [
+            "Q1", "Q2", "Q3", "Q4", "月", "季度", "年", "本周", "本月", "本期",
+            "今年", "去年", "同比", "环比", "上半年", "下半年", "上个", "上个月",
+            "上季度", "本季度", "近", "最近",
+        ]
+        has_time_keyword = any(kw in ctx.query for kw in TIME_KEYWORDS)
+        # 更新 completeness
+        if has_time_keyword:
+            completeness["has_time"] = True
+            completeness["score"] = min(1.0, completeness.get("score", 0) + 0.3)
+
+        query_len = len(ctx.query.strip())
+
+        # 场景1: 查询太短，无法判断意图
+        if query_len < 3:
+            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
+                          "查询太短, 需要更多信息")
+            return {
+                "type": "clarify",
+                "question": "请问您想查什么数据？",
+                "options": [
+                    {"label": "查看所有指标", "action": "command", "value": "/list"},
+                    {"label": "查看数据状态", "action": "command", "value": "/db"},
+                    {"label": "查看帮助", "action": "command", "value": "/help"},
+                ],
+                "hint": "您也可以直接输入自然语言查询，如'Q3 年度累计中标总额'",
+                "completeness": completeness,
+                "entity_tags": tags,
+            }
+
+        # 场景2: 缺少时间范围
+        has_time = completeness.get("has_time", False)
+        has_dimension = completeness.get("has_dimension", False)
+        score = completeness.get("score", 0.5)
+        intent = entities.get("intent", "aggregate")
+
+        # 有明确意图的查询(分布/排名)不需要时间澄清, 默认最新数据即可
+        if intent in ("distribution", "ranking", "trend"):
+            ctx.add_stage("反问澄清", "done", 0, f"意图={intent}, 默认最新数据")
+            return None
+
+        if not has_time and not has_dimension and query_len < 8:
+            # 查询太模糊: 既没时间也没维度
+            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
+                          "缺少时间和筛选条件, 提供时间选项")
+            return {
+                "type": "clarify",
+                "question": "请补充查询条件，以便精准查询：",
+                "options": [
+                    {"label": "📅 本月", "action": "refine", "value": f"本月 {ctx.query}"},
+                    {"label": "📅 本季度", "action": "refine", "value": f"本季度 {ctx.query}"},
+                    {"label": "📅 今年", "action": "refine", "value": f"今年 {ctx.query}"},
+                    {"label": "⏭️ 跳过, 用最新数据", "action": "refine", "value": ctx.query},
+                ],
+                "hint": "添加时间范围可以获得更精确的结果",
+                "completeness": completeness,
+                "entity_tags": tags,
+            }
+
+        if not has_time and has_dimension:
+            # 有维度筛选但缺时间
+            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
+                          "已识别筛选条件但缺少时间范围")
+            return {
+                "type": "clarify",
+                "question": "已识别您的筛选条件，请补充时间范围：",
+                "options": [
+                    {"label": "📅 本月", "action": "refine", "value": f"本月 {ctx.query}"},
+                    {"label": "📅 本季度", "action": "refine", "value": f"本季度 {ctx.query}"},
+                    {"label": "📅 今年 (YTD)", "action": "refine", "value": f"今年 {ctx.query}"},
+                    {"label": "⏭️ 跳过, 用最新数据", "action": "refine", "value": ctx.query},
+                ],
+                "hint": "添加时间后可以获得对应期间的数据",
+                "completeness": completeness,
+                "entity_tags": tags,
+            }
+
+        # 场景3: 无时间词但查询较长(有足够上下文) → 不反问, 默认最新数据
+        if not has_time and score >= 0.4:
+            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
+                          "未指定时间, 默认使用最新数据")
+            return None  # 不反问, 继续流水线
+
+        return None  # 信息完整, 继续流水线
 
     # ── Stage 2: Time ──
 

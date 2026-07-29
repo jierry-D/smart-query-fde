@@ -57,7 +57,7 @@ class Stage0Preflight:
 
         # 3. 时间范围缺失提示
         has_time = any(kw in query for kw in [
-            "Q1", "Q2", "Q3", "Q4", "月", "季度", "年", "本周", "本月",
+            "Q1", "Q2", "Q3", "Q4", "月", "季度", "年", "本周", "本月", "本期",
             "今年", "去年", "同比", "环比", "上半年", "下半年",
         ])
         if not has_time and status == "ok":
