@@ -292,13 +292,19 @@ def _import_metric_requirements(db, sheet_name: str, headers: list, data_rows: l
         formula = str(row[formula_idx])[:200] if formula_idx and formula_idx < len(row) and row[formula_idx] else ""
         source = str(row[source_idx])[:200] if source_idx and source_idx < len(row) and row[source_idx] else ""
 
-        # 注册为 pending 指标 (等数据接入后激活)
+        # 注册指标 (已存在的补充解释/公式)
         try:
-            db.execute_write(
-                "INSERT OR IGNORE INTO metric_registry (name, category, status, complexity, explanation, formula, source) "
-                "VALUES (?, ?, 'pending', 'L1', ?, ?, ?)",
-                (name, sheet_name, explanation, formula, source),
-            )
+            exist = db.execute_one("SELECT metric_id, explanation FROM metric_registry WHERE name=?", (name,))
+            if exist:
+                if not exist.get("explanation") and explanation:
+                    db.execute_write(
+                        "UPDATE metric_registry SET explanation=?, formula=?, source=?, category=? WHERE metric_id=?",
+                        (explanation, formula, source, sheet_name, exist["metric_id"]))
+            else:
+                db.execute_write(
+                    "INSERT INTO metric_registry (name, category, status, complexity, explanation, formula, source) "
+                    "VALUES (?, ?, 'pending', 'L1', ?, ?, ?)",
+                    (name, sheet_name, explanation, formula, source))
             count += 1
         except Exception as e:
             logger.debug("指标注册跳过: %s - %s", name, e)
@@ -348,12 +354,19 @@ def _register_requirement_synonyms(category: str, metric_names: list[str]):
 
 
 def _auto_connect_pending_metrics(db) -> int:
-    """自动将 pending 指标连接到数据表: 关键词匹配 → 生成SQL → 激活"""
-    pending = db.execute(
-        "SELECT metric_id, name, category FROM metric_registry WHERE status='pending'"
+    """自动连接指标到数据表: 关键词匹配 → 生成SQL → 激活 (含已有指标更新)"""
+    # 1. 更新已有指标的解释和SQL (来自需求清单导入但SQL可能过时)
+    all_metrics = db.execute(
+        "SELECT metric_id, name, explanation, formula, status FROM metric_registry"
     )
-    if not pending:
+    if not all_metrics:
         return 0
+
+    # 2. 处理所有指标: pending激活, available更新SQL指向新表
+    pending = [m for m in all_metrics if m["status"] == "pending"]
+    existing = [m for m in all_metrics if m["status"] == "available"]
+
+    targets = pending + existing
 
     tables = db.execute("SELECT DISTINCT table_name FROM data_snapshots")
     table_names = [t["table_name"] for t in tables]
@@ -371,39 +384,32 @@ def _auto_connect_pending_metrics(db) -> int:
     }
 
     connected = 0
-    for m in pending:
+    for m in targets:
         name = m["name"]
-        # 找匹配的表
         matched_table = None
         for kw, tbl in KEYWORD_TABLE_MAP.items():
             if kw in name:
-                # 找以该表名开头的实际数据表
                 for tn in table_names:
                     if tn.startswith(tbl):
                         matched_table = tn
                         break
                 if matched_table:
                     break
-
         if not matched_table:
             continue
 
-        # 生成SQL模板
         schema = db.get_table_schema(matched_table)
-        numeric_cols = [
-            c["name"] for c in schema
+        numeric_cols = [c["name"] for c in schema
             if c["name"] not in ("_row_id", "snapshot_id")
-            and any(t in c["type"].upper() for t in ("REAL", "INTEGER", "FLOAT"))
-        ]
+            and any(t in c["type"].upper() for t in ("REAL", "INTEGER", "FLOAT"))]
         if not numeric_cols:
             continue
 
-        col = numeric_cols[0]  # 取第一个数值列
+        col = numeric_cols[0]
         safe_col = col.replace('"', '""')
 
-        # 判断聚合方式
-        if any(kw in name for kw in ("各地市", "各业务线", "各区域", "分布", "占比", "排名", "排行")):
-            # TABLE 类型: 需要 GROUP BY
+        # 聚合方式判断 (同前)
+        if any(kw in name for kw in ("各地市", "各业务线", "各区域", "分布", "排名", "排行")):
             group_col = None
             if "各地市" in name or "城市" in name or "区域" in name:
                 for c in schema:
@@ -430,14 +436,21 @@ def _auto_connect_pending_metrics(db) -> int:
             sql = f'SELECT ROUND(SUM("{safe_col}"),2) AS value FROM "{matched_table}"'
             fmt = "number"
 
-        # 激活指标
-        db.execute_write(
-            "UPDATE metric_registry SET status='available', table_name=?, sql_template=?, result_format=?, complexity='L1' WHERE metric_id=?",
-            (matched_table, sql, fmt, m["metric_id"]),
-        )
+        # 更新: pending→available, 已有→更新SQL+explanation
+        if m["status"] == "pending":
+            db.execute_write(
+                "UPDATE metric_registry SET status='available', table_name=?, sql_template=?, result_format=?, complexity='L1' WHERE metric_id=?",
+                (matched_table, sql, fmt, m["metric_id"]),
+            )
+        else:
+            # 已有指标: 更新SQL指向新数据表
+            db.execute_write(
+                "UPDATE metric_registry SET table_name=?, sql_template=?, result_format=? WHERE metric_id=?",
+                (matched_table, sql, fmt, m["metric_id"]),
+            )
         connected += 1
 
-    logger.info("自动连接: %d 个 pending 指标已激活", connected)
+    logger.info("自动连接: %d 个指标已更新/激活", connected)
     return connected
 
 
