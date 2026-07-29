@@ -1,11 +1,9 @@
 """对话 API — NL2SQL 查询 + 命令处理 (SSE 流式)"""
 
 import json
-import time
 import re
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
 
 from ...core.deps import get_current_user
 from ...core.security import build_data_scope_sql, get_data_scope
@@ -109,7 +107,6 @@ def export_csv(req: ChatRequest, user: dict = Depends(get_current_user)):
     """导出查询结果为 CSV"""
     import io
     import csv
-    from fastapi.responses import StreamingResponse
 
     user_input = ' '.join(req.q.strip().split())
     if not user_input:
@@ -145,7 +142,7 @@ def export_csv(req: ChatRequest, user: dict = Depends(get_current_user)):
         writer.writerow([row.get(c, "") for c in cols])
 
     output.seek(0)
-    filename = f"query_result_{user_input[:20]}.csv"
+    from fastapi.responses import StreamingResponse
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
@@ -345,17 +342,6 @@ def _get_loader(db):
     return MetricLoader(db)
 
 
-def _build_entity_tags(entities: dict) -> list:
-    tags = []
-    for f in entities.get("filters", []):
-        tags.append({"type": "filter", "label": f"{f['field']}={f['value']}"})
-    if entities.get("group_by"):
-        names = {"region": "按区域", "business_line": "按业务线"}
-        tags.append({"type": "group", "label": names.get(entities["group_by"], entities["group_by"])})
-    if entities.get("limit"):
-        tags.append({"type": "limit", "label": f"Top {entities['limit']}"})
-    return tags
-
 
 def _scope_desc(user: dict) -> str:
     role = user.get("role", "employee")
@@ -366,10 +352,6 @@ def _scope_desc(user: dict) -> str:
     else:
         return f"{user.get('department', '')} - {user.get('region', '')}"
 
-
-def _build_union_sql(base_sql: str, result_format: str, snapshot_ids: list) -> str:
-    """多快照 UNION ALL 聚合"""
-    from ...engine.sql_filter import inject_snapshot_where
 
     sub_queries = []
     for sid in snapshot_ids:
