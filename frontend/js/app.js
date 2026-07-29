@@ -382,8 +382,25 @@ function renderNumber(d) {
     h += '</div>';
   }
 
-  // Explanation
-  if (d.explanation) h += `<div style="font-size:.78rem;color:var(--c-text-secondary);margin-top:6px">${esc(d.explanation)}</div>`;
+  // Explanation + Formula
+  if (d.explanation) h += `<div class="metric-explain">📖 ${esc(d.explanation)}</div>`;
+  if (d.formula) h += `<div class="metric-formula">📐 ${esc(d.formula)}</div>`;
+
+  // Trend analysis
+  if (d.time_intelligence && d.time_intelligence.available) {
+    const ti = d.time_intelligence;
+    const color = ti.growth_rate >= 0 ? 'var(--c-success)' : 'var(--c-danger)';
+    const arrow = ti.growth_rate >= 0 ? '↑' : '↓';
+    h += `<div class="trend-box" style="border-left-color:${color}">
+      <div class="trend-title">📈 ${ti.label || '变化趋势'}</div>
+      <div class="trend-values">
+        <span>上期: ${(ti.previous_value||0).toLocaleString()}</span>
+        <span class="trend-arrow">→</span>
+        <span>本期: ${(ti.current_value||d.value||0).toLocaleString()}</span>
+        <span class="trend-rate" style="color:${color}">${arrow} ${Math.abs(ti.growth_rate||0).toFixed(1)}%</span>
+      </div>
+    </div>`;
+  }
 
   return h;
 }
@@ -413,6 +430,9 @@ function renderTable(d) {
       h += '</tr>';
     });
     h += '</tbody></table>';
+
+    // Explanation for table
+    if (d.explanation) h += `<div class="metric-explain">📖 ${esc(d.explanation)}</div>`;
 
     // CSV export button
     if (d._query) {

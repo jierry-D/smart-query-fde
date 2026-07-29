@@ -402,7 +402,7 @@ class NL2SQLPipeline:
             if len(ctx.snapshot_ids) == 1:
                 sql = inject_snapshot_where(sql, ctx.snapshot_ids)
             else:
-                sql = self._build_union(sql, ctx.snapshot_ids,
+                sql = _build_union(sql, ctx.snapshot_ids,
                                         ctx.matched_metric.get("result_format", "number"))
 
         try:
@@ -454,23 +454,23 @@ class NL2SQLPipeline:
                 else:
                     value = round(raw, 2) if raw else 0
 
-            # Time intelligence
-            ti_result = None
-            if ctx.time_intelligence and ctx.time_intelligence.get("previous_ids"):
+            # Time intelligence (同比/环比/变化解析)
+            ti_result = ctx.time_intelligence  # from Stage 2
+            if ti_result and ti_result.get("previous_ids"):
                 from .time_intelligence import TimeIntelligenceEngine
                 engine = TimeIntelligenceEngine(ctx.db)
-                scope_sql = ""
                 from ..core.security import build_data_scope_sql
-                scope_sql = build_data_scope_sql(ctx.user)
-
                 ti_result = engine.compute(
-                    ctx.time_intelligence["function"],
+                    ti_result.get("function", "mom"),
                     value,
                     ctx.matched_metric["sql_template"],
-                    scope_sql,
+                    build_data_scope_sql(ctx.user),
                     ctx.snapshot_ids or [],
-                    ctx.time_intelligence.get("previous_ids", []),
+                    ti_result.get("previous_ids", []),
                 )
+            # 自动环比: 无time_intelligence时比较相邻快照
+            if not ti_result or not ti_result.get("available"):
+                ti_result = _auto_mom(ctx.db, ctx.matched_metric, value, ctx.snapshot_ids)
 
             return {
                 "type": "number",
@@ -480,6 +480,7 @@ class NL2SQLPipeline:
                 "unit": metric.get("result_unit", ""),
                 "result_format": fmt,
                 "explanation": metric.get("explanation", ""),
+                "formula": metric.get("formula", ""),
                 "sql": ctx.governance_result.get("final_sql", ""),
                 "exec_ms": ctx.exec_ms,
                 "row_count": len(rows),
@@ -522,8 +523,50 @@ class NL2SQLPipeline:
             response["preflight"] = ctx.preflight
         return response
 
-    @staticmethod
-    def _build_union(base_sql: str, snapshot_ids: list, fmt: str) -> str:
+def _auto_mom(db, metric: dict, current_value, snapshot_ids: list = None) -> dict | None:
+    """自动计算环比: 跨同基名表的不同期间值变化"""
+    if current_value is None:
+        return None
+    try:
+        table = metric.get("table_name", "")
+        if not table:
+            return None
+        # 提取基名 (去掉 _2026_07 后缀)
+        import re
+        base = re.sub(r'_\d{4}_\d{2}$', '', table)
+        # 找同基名的所有快照
+        snaps = db.execute(
+            "SELECT snapshot_id, table_name, data_period FROM data_snapshots WHERE table_name LIKE ? ORDER BY data_period",
+            (f"{base}%",)
+        )
+        if len(snaps) < 2:
+            return None
+        # 取最近两个期间
+        prev_snap = snaps[-2]
+        cur_snap = snaps[-1]
+        # 用上一个快照的表执行相同SQL结构
+        sql = metric.get("sql_template", "")
+        if not sql:
+            return None
+        prev_sql = sql.replace(f'"{table}"', f'"{prev_snap["table_name"]}"')
+        prev_rows = db.execute(prev_sql)
+        prev_val = prev_rows[0]["value"] if prev_rows else None
+        if prev_val and prev_val > 0:
+            growth = round((current_value - prev_val) / prev_val * 100, 2)
+            direction = "↑" if growth >= 0 else "↓"
+            return {
+                "available": True,
+                "label": f"环比 ({prev_snap['data_period']}→{cur_snap['data_period']})",
+                "previous_value": prev_val,
+                "current_value": current_value,
+                "growth_rate": growth,
+                "direction": direction,
+            }
+    except Exception:
+        pass
+    return None
+
+def _build_union(base_sql: str, snapshot_ids: list, fmt: str) -> str:
         from .sql_filter import inject_snapshot_where
         import re
 
