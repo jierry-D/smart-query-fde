@@ -402,10 +402,28 @@ def _auto_connect_pending_metrics(db) -> int:
         safe_col = col.replace('"', '""')
 
         # 判断聚合方式
-        if any(kw in name for kw in ("数量", "个数", "项目数", "客户数", "总数")):
+        if any(kw in name for kw in ("各地市", "各业务线", "各区域", "分布", "占比", "排名", "排行")):
+            # TABLE 类型: 需要 GROUP BY
+            group_col = None
+            if "各地市" in name or "城市" in name or "区域" in name:
+                for c in schema:
+                    if c["name"] in ("region", "所属区域", "区域") or "区域" in c["name"]:
+                        group_col = c["name"]; break
+            if "业务线" in name or "板块" in name:
+                for c in schema:
+                    if c["name"] in ("business_line", "业务线") or "业务线" in c["name"]:
+                        group_col = c["name"]; break
+            if group_col:
+                safe_g = group_col.replace('"', '""')
+                sql = f'SELECT "{safe_g}" AS label, ROUND(SUM("{safe_col}"),2) AS value FROM "{matched_table}" GROUP BY "{safe_g}" ORDER BY value DESC'
+                fmt = "table"
+            else:
+                sql = f'SELECT ROUND(SUM("{safe_col}"),2) AS value FROM "{matched_table}"'
+                fmt = "number"
+        elif any(kw in name for kw in ("数量", "个数", "项目数", "客户数", "总数")):
             sql = f'SELECT COUNT(*) AS value FROM "{matched_table}"'
             fmt = "integer"
-        elif any(kw in name for kw in ("率", "比", "占比", "转化")):
+        elif any(kw in name for kw in ("率", "比", "转化")):
             sql = f'SELECT ROUND(AVG("{safe_col}"),2) AS value FROM "{matched_table}"'
             fmt = "percent"
         else:

@@ -130,6 +130,11 @@ def export_csv(req: ChatRequest, user: dict = Depends(get_current_user)):
     rows = result.get("rows", [])
     cols = result.get("columns", [])
 
+    # 数字结果转为单行CSV
+    if not rows and result.get("type") == "number" and result.get("value") is not None:
+        rows = [{"指标": result.get("metric_name", ""), "数值": result["value"]}]
+        cols = ["指标", "数值"]
+
     if not rows:
         raise HTTPException(404, "查询无结果")
 
