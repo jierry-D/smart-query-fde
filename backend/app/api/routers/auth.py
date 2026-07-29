@@ -65,10 +65,13 @@ def login(req: LoginRequest):
         (user["user_id"],),
     )
 
-    # 保存 refresh token
+    # 保存 refresh token (先清理旧token避免UNIQUE冲突)
     from datetime import datetime, timedelta, timezone
     expires = datetime.now(timezone.utc) + timedelta(days=7)
 
+    db.execute_write(
+        "DELETE FROM refresh_tokens WHERE user_id = ?", (user["user_id"],)
+    )
     db.execute_write(
         "INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)",
         (user["user_id"], refresh_token, expires.strftime("%Y-%m-%d %H:%M:%S")),

@@ -119,7 +119,7 @@ def _handle_command(cmd: str, db: DatabaseConnector, user: dict) -> dict:
                 "  数字政务 中标总额        → 业务线筛选",
                 "  Top 5 各地市中标额       → 排名筛选",
                 "",
-                f"👤 当前: {user['display_name']} | 角色: {user['role']} | 范围: {_scope_desc(user)}",
+                f"👤 当前: {user.get('display_name') or user.get('username', '?')} | 角色: {user['role']} | 范围: {_scope_desc(user)}",
             ]),
         }
 
