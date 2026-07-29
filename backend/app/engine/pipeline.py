@@ -53,6 +53,7 @@ class NL2SQLPipeline:
     def __init__(self, db, llm_provider=None):
         self.db = db
         self.llm = llm_provider
+        self._kb_resolver = None  # lazy init
 
     def run(self, query: str, user: dict) -> dict:
         """执行完整流水线，返回响应字典"""
@@ -64,6 +65,9 @@ class NL2SQLPipeline:
 
         # Stage 1: NER
         self._stage1_ner(ctx)
+
+        # Stage 1.2: 知识库增强 (同义词扩展 + 业务逻辑)
+        self._stage_kb_enhance(ctx)
 
         # Stage 1.5: 反问澄清检测
         clarification = self._check_clarification(ctx)
@@ -112,6 +116,18 @@ class NL2SQLPipeline:
             response["preflight"] = ctx.preflight
         return response
 
+    def _get_kb(self):
+        """懒加载知识库解析器"""
+        if self._kb_resolver is None:
+            from pathlib import Path
+            from ..semantic.kb_resolver import KBResolver
+            kb_dir = Path(__file__).parent.parent.parent / "metrics"
+            self._kb_resolver = KBResolver(
+                enterprise_kb_path=str(kb_dir / "enterprise_kb.yaml"),
+                dataset_kb_dir=str(kb_dir / "dataset_kb"),
+            )
+        return self._kb_resolver
+
     # ── Stage 0: Preflight ──
 
     def _stage0_preflight(self, ctx: PipelineContext):
@@ -133,6 +149,54 @@ class NL2SQLPipeline:
         ctx.entities = ner.extract(ctx.query)
         ctx.add_stage("NER实体提取", "done", (time.perf_counter() - t1) * 1000,
                       f"意图={ctx.entities.get('intent', '?')}, 筛选={len(ctx.entities.get('filters', []))}条")
+
+    # ── KB Enhance ──
+
+    def _stage_kb_enhance(self, ctx: PipelineContext):
+        """知识库增强: 同义词扩展 + 业务逻辑注入"""
+        t_kb = time.perf_counter()
+        try:
+            kb = self._get_kb()
+            hint = ctx.entities.get("metric_hint", ctx.query)
+
+            # 1. 同义词扩展: 将用户用语映射到标准指标名
+            kb_synonyms = []
+            words = hint.replace('的', ' ').split()
+            for w in words:
+                if len(w) >= 2:
+                    resolved = kb.resolve_synonym(w)
+                    if resolved and resolved != w:
+                        kb_synonyms.append(resolved)
+
+            if kb_synonyms:
+                # 存储扩展后的搜索词供 Stage 3 使用
+                ctx.kb_synonyms = kb_synonyms
+                logger.debug("KB同义词: %s → %s", hint, kb_synonyms)
+
+            # 2. 业务逻辑注入: 检测业务术语并添加筛选条件
+            for w in words:
+                if len(w) >= 2:
+                    logic = kb.resolve_business_logic(w)
+                    if logic and isinstance(logic, dict):
+                        cond = logic.get("condition", "")
+                        if cond:
+                            ctx.entities.setdefault("kb_conditions", []).append({
+                                "term": w,
+                                "condition": cond,
+                                "description": logic.get("description", ""),
+                            })
+
+            elapsed = (time.perf_counter() - t_kb) * 1000
+            detail_parts = []
+            if kb_synonyms:
+                detail_parts.append(f"同义词: {len(kb_synonyms)}")
+            if ctx.entities.get("kb_conditions"):
+                detail_parts.append(f"业务逻辑: {len(ctx.entities['kb_conditions'])}")
+            if detail_parts:
+                ctx.add_stage("知识库增强", "done", elapsed, ", ".join(detail_parts))
+
+        except Exception as e:
+            logger.debug("KB增强跳过: %s", e)
 
     # ── Clarification ──
 
@@ -258,11 +322,16 @@ class NL2SQLPipeline:
         from ..semantic.loader import MetricLoader
         loader = MetricLoader(ctx.db)
 
-        # 多级搜索
+        # 多级搜索 (含KB同义词扩展)
         search_queries = [ctx.cleaned_query]
         hint = ctx.entities.get("metric_hint", "")
         if hint and hint != ctx.cleaned_query:
             search_queries.append(hint)
+        # KB 同义词扩展的搜索词
+        kb_synonyms = getattr(ctx, 'kb_synonyms', [])
+        for syn in kb_synonyms:
+            if syn not in search_queries:
+                search_queries.append(syn)
         if ctx.query not in search_queries:
             search_queries.append(ctx.query)
 
@@ -331,6 +400,21 @@ class NL2SQLPipeline:
         # 应用 NER 实体
         if ctx.entities.get("filters") or ctx.entities.get("group_by") or ctx.entities.get("order"):
             sql = apply_entities(sql, ctx.entities)
+
+        # 应用 KB 业务逻辑条件
+        kb_conditions = ctx.entities.get("kb_conditions", [])
+        if kb_conditions:
+            for kc in kb_conditions:
+                cond = kc["condition"]
+                if "WHERE" in sql.upper():
+                    sql = sql.replace("WHERE", f"WHERE ({cond}) AND ", 1)
+                else:
+                    # 在 FROM 子句之后插入 WHERE
+                    import re
+                    sql = re.sub(
+                        r'(FROM\s+"?\w+"?\s*)', f'\\1WHERE ({cond}) ', sql,
+                        count=1, flags=re.IGNORECASE
+                    )
 
         ctx.generated_sql = sql
         ctx.add_stage("SQL生成", "done", (time.perf_counter() - t4) * 1000,

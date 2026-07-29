@@ -153,6 +153,26 @@ def test_db_user_login(db_connector):
     assert admin["role"] == "admin"
 
 
+def test_kb_synonym_resolve():
+    """知识库同义词解析"""
+    from backend.app.semantic.kb_resolver import KBResolver
+    from pathlib import Path
+    kb_dir = Path(__file__).parent.parent / "metrics"
+    kb = KBResolver(
+        enterprise_kb_path=str(kb_dir / "enterprise_kb.yaml"),
+        dataset_kb_dir=str(kb_dir / "dataset_kb"),
+    )
+    assert kb.resolve_synonym("中标额") == "年度累计中标总额"
+    assert kb.resolve_synonym("签约额") == "年度累计签约总额"
+    assert kb.resolve_synonym("转化率") == "商机签约转化率"
+
+    logic = kb.resolve_business_logic("大额订单")
+    assert logic is not None
+    assert "contract_amount > 10000" in str(logic)
+
+    assert kb.resolve_field_mapping("金额") == "contract_amount"
+
+
 # ── Fixtures ──
 
 @pytest.fixture
