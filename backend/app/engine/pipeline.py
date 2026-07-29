@@ -227,8 +227,8 @@ class NL2SQLPipeline:
 
         query_len = len(ctx.query.strip())
 
-        # 场景1: 查询太短，无法判断意图
-        if query_len < 3:
+        # 场景1: 查询太短，无法判断意图 (KB已解析则跳过)
+        if query_len < 3 and not kb_synonyms:
             ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
                           "查询太短, 需要更多信息")
             return {
@@ -249,6 +249,12 @@ class NL2SQLPipeline:
         has_dimension = completeness.get("has_dimension", False)
         score = completeness.get("score", 0.5)
         intent = entities.get("intent", "aggregate")
+
+        # KB同义词成功解析 → 查询意图明确, 跳过澄清
+        kb_synonyms = getattr(ctx, 'kb_synonyms', [])
+        if kb_synonyms:
+            ctx.add_stage("反问澄清", "done", 0, f"KB同义词={len(kb_synonyms)}, 默认最新数据")
+            return None
 
         # 有明确意图的查询(分布/排名)不需要时间澄清, 默认最新数据即可
         if intent in ("distribution", "ranking", "trend"):
@@ -322,24 +328,35 @@ class NL2SQLPipeline:
         from ..semantic.loader import MetricLoader
         loader = MetricLoader(ctx.db)
 
-        # 多级搜索 (含KB同义词扩展)
-        search_queries = [ctx.cleaned_query]
+        # 多级搜索 (原始查询优先 → KB同义词增强)
+        search_queries = []
+        # 1. 清洗后的查询 (最高优先级 - 保留用户原意)
+        if ctx.cleaned_query not in search_queries:
+            search_queries.append(ctx.cleaned_query)
+        # 2. NER提取的指标提示
         hint = ctx.entities.get("metric_hint", "")
-        if hint and hint != ctx.cleaned_query:
+        if hint and hint not in search_queries:
             search_queries.append(hint)
-        # KB 同义词扩展的搜索词
+        # 3. KB同义词扩展 (增强, 不覆盖)
         kb_synonyms = getattr(ctx, 'kb_synonyms', [])
         for syn in kb_synonyms:
             if syn not in search_queries:
                 search_queries.append(syn)
+        # 4. 原始查询
         if ctx.query not in search_queries:
             search_queries.append(ctx.query)
 
-        results = []
+        # 多轮搜索, 合并结果取最优 (不早停)
+        all_results = {}
         for sq in search_queries:
-            results = loader.search(sq, top_k=5)
-            if results:
-                break
+            round_results = loader.search(sq, top_k=5)
+            for rr in round_results:
+                mid = rr["metric"]["metric_id"]
+                # 保留每个指标的最高分
+                if mid not in all_results or rr["score"] > all_results[mid]["score"]:
+                    all_results[mid] = rr
+        # 按分数降序
+        results = sorted(all_results.values(), key=lambda x: x["score"], reverse=True)[:5]
 
         if not results:
             ctx.add_stage("指标匹配", "error", (time.perf_counter() - t3) * 1000, "未找到")
@@ -347,9 +364,13 @@ class NL2SQLPipeline:
 
         best = results[0]
         ctx.matched_metric = best["metric"]
-        ctx.matched_metric["_match_score"] = best["score"]  # 传递匹配分数供 Stage 4 决策
+        ctx.matched_metric["_match_score"] = best["score"]
         has_ner = ctx.entities.get("filters") or ctx.entities.get("group_by")
-        if best["score"] != 1.0 and not has_ner:
+        # KB同义词命中 → 放宽模糊匹配门槛 (无需NER筛选)
+        kb_synonyms = getattr(ctx, 'kb_synonyms', [])
+        kb_boosted = bool(kb_synonyms) and best["score"] >= 0.7
+
+        if best["score"] != 1.0 and not has_ner and not kb_boosted:
             ctx.add_stage("指标匹配", "error", (time.perf_counter() - t3) * 1000,
                           f"模糊匹配: {best['metric']['name']} (score={best['score']:.2f})")
             ctx._suggestions = [r["metric"]["name"] for r in results]
