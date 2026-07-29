@@ -3,8 +3,6 @@
 import os
 from typing import AsyncIterator
 
-from openai import AsyncOpenAI
-
 from .base import LLMProvider
 from ..core.logging import get_logger
 
@@ -22,6 +20,7 @@ class DeepSeekProvider(LLMProvider):
             logger.warning("DEEPSEEK_API_KEY 未设置, LLM 功能将不可用")
             self.client = None
         else:
+            from openai import AsyncOpenAI
             self.client = AsyncOpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url + "/v1" if not self.base_url.endswith("/v1") else self.base_url,
