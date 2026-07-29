@@ -43,8 +43,25 @@ def import_excel(filepath: str, db, user: dict) -> dict:
             sheets_result.append({"sheet": sheet_name, "status": "skipped", "reason": "无数据行"})
             continue
 
-        # 生成表名
-        table_name = _safe_table_name(sheet_name)
+        # 检测: 指标需求清单 (含"指标名称"列) → 导入到 metric_registry
+        if any("指标名称" in h for h in headers):
+            count = _import_metric_requirements(db, sheet_name, headers, data_rows)
+            sheets_result.append({
+                "sheet": sheet_name, "status": "imported",
+                "metrics_imported": count, "type": "metric_requirements",
+            })
+            continue
+
+        # 生成表名 (含文件名上下文避免冲突)
+        base_name = _safe_table_name(sheet_name)
+        # 如果sheet名是纯日期格式，用文件名+sheet名
+        if re.match(r'^\d{4}[-_]\d{2}$', str(sheet_name)):
+            import os
+            file_stem = os.path.splitext(os.path.basename(filepath))[0]
+            file_prefix = _safe_table_name(file_stem)[:30]
+            table_name = f"{file_prefix}_{base_name}"[:64]
+        else:
+            table_name = base_name
 
         # 推断列类型
         col_types = _infer_column_types(headers, data_rows)
@@ -105,6 +122,12 @@ def import_excel(filepath: str, db, user: dict) -> dict:
         })
 
     wb.close()
+
+    # 自动连接 pending 指标到数据表
+    try:
+        _auto_connect_pending_metrics(db)
+    except Exception:
+        pass
 
     # 刷新指标加载器
     try:
@@ -247,6 +270,157 @@ def _import_data(db, table_name: str, headers: list, data_rows: list, col_types:
             pass
 
     return count
+
+
+def _import_metric_requirements(db, sheet_name: str, headers: list, data_rows: list) -> int:
+    """导入指标需求清单 → metric_registry (status=pending, 等待数据接入)"""
+    count = 0
+    # 找到各列索引
+    name_idx = next((i for i, h in enumerate(headers) if "指标名称" in h), 0)
+    explain_idx = next((i for i, h in enumerate(headers) if "解释" in h), None)
+    formula_idx = next((i for i, h in enumerate(headers) if "公式" in h), None)
+    source_idx = next((i for i, h in enumerate(headers) if "来源" in h), None)
+
+    for row in data_rows:
+        if len(row) <= name_idx:
+            continue
+        name = str(row[name_idx]).strip() if row[name_idx] else ""
+        if not name or len(name) < 2 or name in ("指标名称", "None"):
+            continue
+
+        explanation = str(row[explain_idx])[:500] if explain_idx and explain_idx < len(row) and row[explain_idx] else ""
+        formula = str(row[formula_idx])[:200] if formula_idx and formula_idx < len(row) and row[formula_idx] else ""
+        source = str(row[source_idx])[:200] if source_idx and source_idx < len(row) and row[source_idx] else ""
+
+        # 注册为 pending 指标 (等数据接入后激活)
+        try:
+            db.execute_write(
+                "INSERT OR IGNORE INTO metric_registry (name, category, status, complexity, explanation, formula, source) "
+                "VALUES (?, ?, 'pending', 'L1', ?, ?, ?)",
+                (name, sheet_name, explanation, formula, source),
+            )
+            count += 1
+        except Exception as e:
+            logger.debug("指标注册跳过: %s - %s", name, e)
+
+    # 自动注册KB同义词
+    metrics_added = [str(row[name_idx]).strip() for row in data_rows
+                     if len(row) > name_idx and row[name_idx] and str(row[name_idx]).strip()]
+    if metrics_added:
+        _register_requirement_synonyms(sheet_name, metrics_added)
+
+    logger.info("指标需求导入: %s → %d 个指标", sheet_name, count)
+    return count
+
+
+def _register_requirement_synonyms(category: str, metric_names: list[str]):
+    """为导入的指标需求自动注册KB同义词"""
+    import yaml
+    from pathlib import Path
+
+    kb_path = Path(__file__).parent.parent.parent / "metrics" / "enterprise_kb.yaml"
+    try:
+        with open(kb_path, "r", encoding="utf-8") as f:
+            kb = yaml.safe_load(f) or {}
+    except Exception:
+        kb = {}
+
+    synonyms = kb.get("synonyms", {})
+    if synonyms is None:
+        synonyms = {}
+
+    added = 0
+    for name in metric_names:
+        if name and name not in synonyms:
+            synonyms[name] = name
+            added += 1
+        # 简化名（去掉前缀/后缀的常见词）
+        short = name.replace("年度累计", "").replace("本期", "").replace("数量", "").replace("金额", "")
+        if short and short != name and len(short) >= 2 and short not in synonyms:
+            synonyms[short] = name
+            added += 1
+
+    if added > 0:
+        kb["synonyms"] = synonyms
+        with open(kb_path, "w", encoding="utf-8") as f:
+            yaml.dump(kb, f, allow_unicode=True, default_flow_style=False)
+        logger.info("已注册 %d 个指标需求同义词", added)
+
+
+def _auto_connect_pending_metrics(db) -> int:
+    """自动将 pending 指标连接到数据表: 关键词匹配 → 生成SQL → 激活"""
+    pending = db.execute(
+        "SELECT metric_id, name, category FROM metric_registry WHERE status='pending'"
+    )
+    if not pending:
+        return 0
+
+    tables = db.execute("SELECT DISTINCT table_name FROM data_snapshots")
+    table_names = [t["table_name"] for t in tables]
+
+    # 关键词 → 表名映射
+    KEYWORD_TABLE_MAP = {
+        "中标": "中标管理表",
+        "签约": "合同管理表",
+        "合同": "合同管理表",
+        "商机": "商机管理表",
+        "客户": "合同管理表",
+        "应收": "应收账款表",
+        "逾期": "应收账款表",
+        "回款": "应收账款表",
+    }
+
+    connected = 0
+    for m in pending:
+        name = m["name"]
+        # 找匹配的表
+        matched_table = None
+        for kw, tbl in KEYWORD_TABLE_MAP.items():
+            if kw in name:
+                # 找以该表名开头的实际数据表
+                for tn in table_names:
+                    if tn.startswith(tbl):
+                        matched_table = tn
+                        break
+                if matched_table:
+                    break
+
+        if not matched_table:
+            continue
+
+        # 生成SQL模板
+        schema = db.get_table_schema(matched_table)
+        numeric_cols = [
+            c["name"] for c in schema
+            if c["name"] not in ("_row_id", "snapshot_id")
+            and any(t in c["type"].upper() for t in ("REAL", "INTEGER", "FLOAT"))
+        ]
+        if not numeric_cols:
+            continue
+
+        col = numeric_cols[0]  # 取第一个数值列
+        safe_col = col.replace('"', '""')
+
+        # 判断聚合方式
+        if any(kw in name for kw in ("数量", "个数", "项目数", "客户数", "总数")):
+            sql = f'SELECT COUNT(*) AS value FROM "{matched_table}"'
+            fmt = "integer"
+        elif any(kw in name for kw in ("率", "比", "占比", "转化")):
+            sql = f'SELECT ROUND(AVG("{safe_col}"),2) AS value FROM "{matched_table}"'
+            fmt = "percent"
+        else:
+            sql = f'SELECT ROUND(SUM("{safe_col}"),2) AS value FROM "{matched_table}"'
+            fmt = "number"
+
+        # 激活指标
+        db.execute_write(
+            "UPDATE metric_registry SET status='available', table_name=?, sql_template=?, result_format=?, complexity='L1' WHERE metric_id=?",
+            (matched_table, sql, fmt, m["metric_id"]),
+        )
+        connected += 1
+
+    logger.info("自动连接: %d 个 pending 指标已激活", connected)
+    return connected
 
 
 def _humanize_metric_name(col_name: str, agg: str) -> str:

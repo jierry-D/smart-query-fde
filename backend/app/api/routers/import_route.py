@@ -24,14 +24,16 @@ async def import_excel(file: UploadFile = File(...),
 
     db = DatabaseConnector()
 
-    # 保存到临时文件
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx") as tmp:
-        content = await file.read()
-        tmp.write(content)
-        tmp_path = tmp.name
+    # 保存到临时文件 (保留原始文件名)
+    tmp_dir = tempfile.mkdtemp()
+    safe_name = Path(file.filename).stem[:40]
+    tmp_path = os.path.join(tmp_dir, f"{safe_name}.xlsx")
+
+    content = await file.read()
+    with open(tmp_path, "wb") as f:
+        f.write(content)
 
     try:
-        # 使用 MVP 的导入逻辑
         from ...onboarding.importer import import_excel as do_import
         result = do_import(tmp_path, db, user)
         return result
@@ -40,5 +42,6 @@ async def import_excel(file: UploadFile = File(...),
     finally:
         try:
             os.unlink(tmp_path)
+            os.rmdir(tmp_dir)
         except Exception:
             pass
