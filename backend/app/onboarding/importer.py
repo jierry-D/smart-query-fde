@@ -90,6 +90,13 @@ def import_excel(filepath: str, db, user: dict) -> dict:
         except Exception as e:
             logger.warning("指标生成失败: %s", e)
 
+        # 自动注册KB同义词 (仅第一次导入时)
+        if metrics_count > 0:
+            try:
+                _auto_register_kb_synonyms(headers, col_types)
+            except Exception as e:
+                logger.warning("KB同义词注册失败: %s", e)
+
         sheets_result.append({
             "sheet": sheet_name, "table_name": table_name, "status": "imported",
             "data_period": data_period, "row_count": count, "columns": len(headers),
@@ -242,40 +249,101 @@ def _import_data(db, table_name: str, headers: list, data_rows: list, col_types:
     return count
 
 
+def _humanize_metric_name(col_name: str, agg: str) -> str:
+    """生成人性化指标名: '合同金额(万元)' + '合计' → '合同金额 合计'"""
+    # 去掉括号中的单位: 合同金额(万元) → 合同金额
+    clean = re.sub(r'\([^)]*\)', '', col_name).strip()
+    # 去掉下划线残留
+    clean = re.sub(r'_+', ' ', clean).strip()
+    if not clean:
+        clean = col_name
+    return f"{clean} {agg}"
+
+
 def _auto_generate_metrics(db, table_name: str, headers: list, col_types: dict) -> int:
-    """自动生成指标: 每个数值列生成合计/平均"""
+    """自动生成指标: 每个数值列生成合计/平均, 人性化命名"""
     count = 0
     safe_headers = [re.sub(r'[^\w一-鿿]', '_', str(h)) for h in headers]
 
     for i, h in enumerate(headers):
         safe_h = safe_headers[i]
         if col_types[h] in ("REAL", "INTEGER"):
-            # 合计 (表名前缀确保唯一)
-            metric_name = f"{table_name}_{h}合计"
+            clean_name = _humanize_metric_name(h, "").strip()
+
+            # 合计 (不同表同名指标自动跳过)
+            metric_name = f"{clean_name} 合计"
             sql_sum = f'SELECT ROUND(SUM("{safe_h}"), 2) AS value FROM "{table_name}"'
-            try:
-                db.execute_write(
-                    "INSERT INTO metric_registry (name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (metric_name, "自动生成", "available", "L1",
-                     table_name, sql_sum, "number", ""),
-                )
-                count += 1
-            except Exception as e:
-                logger.warning("指标生成(合计)失败: %s", e)
+            if not db.execute_one("SELECT 1 FROM metric_registry WHERE name=?", (metric_name,)):
+                try:
+                    db.execute_write(
+                        "INSERT INTO metric_registry (name, display_name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (metric_name, clean_name, "自动生成", "available", "L1",
+                         table_name, sql_sum, "number", h),
+                    )
+                    count += 1
+                except Exception as e:
+                    logger.warning("指标生成(合计)失败: %s", e)
 
             # 平均
-            metric_name = f"{table_name}_{h}平均"
+            metric_name = f"{clean_name} 平均"
             sql_avg = f'SELECT ROUND(AVG("{safe_h}"), 2) AS value FROM "{table_name}"'
-            try:
-                db.execute_write(
-                    "INSERT INTO metric_registry (name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (metric_name, "自动生成", "available", "L1",
-                     table_name, sql_avg, "number", ""),
-                )
-                count += 1
-            except Exception as e:
-                logger.warning("指标生成(平均)失败: %s", e)
+            if not db.execute_one("SELECT 1 FROM metric_registry WHERE name=?", (metric_name,)):
+                try:
+                    db.execute_write(
+                        "INSERT INTO metric_registry (name, display_name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (metric_name, clean_name, "自动生成", "available", "L1",
+                         table_name, sql_avg, "number", h),
+                    )
+                    count += 1
+                except Exception as e:
+                    logger.warning("指标生成(平均)失败: %s", e)
 
     return count
+
+
+def _auto_register_kb_synonyms(headers: list, col_types: dict):
+    """自动将列名注册为企业知识库同义词"""
+    import yaml
+    from pathlib import Path
+
+    kb_path = Path(__file__).parent.parent.parent / "metrics" / "enterprise_kb.yaml"
+    try:
+        with open(kb_path, "r", encoding="utf-8") as f:
+            kb = yaml.safe_load(f) or {}
+    except Exception:
+        kb = {}
+
+    synonyms = kb.get("synonyms", {})
+    if synonyms is None:
+        synonyms = {}
+
+    added = 0
+    for h in headers:
+        if col_types.get(h) in ("REAL", "INTEGER"):
+            clean = _humanize_metric_name(h, "").strip()
+            # 多种口语变体 → 指标名
+            variants = [
+                clean,
+                h.replace('(', '').replace(')', ''),
+                re.sub(r'\([^)]*\)', '', h).strip(),
+            ]
+            for v in variants:
+                v2 = v.strip()
+                if v2 and v2 not in synonyms:
+                    # SUM variants
+                    synonyms[v2] = f"{clean} 合计"
+                    synonyms[f"{v2}合计"] = f"{clean} 合计"
+                    synonyms[f"{v2}总和"] = f"{clean} 合计"
+                    synonyms[f"{v2}总额"] = f"{clean} 合计"
+                    # AVG variants
+                    synonyms[f"{v2}平均"] = f"{clean} 平均"
+                    synonyms[f"{v2}均值"] = f"{clean} 平均"
+                    added += 1
+
+    if added > 0:
+        kb["synonyms"] = synonyms
+        with open(kb_path, "w", encoding="utf-8") as f:
+            yaml.dump(kb, f, allow_unicode=True, default_flow_style=False)
+        logger.info("已注册 %d 个KB同义词到 %s", added, kb_path)

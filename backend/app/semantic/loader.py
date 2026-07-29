@@ -128,20 +128,30 @@ class MetricLoader:
         results = []
         for m in candidates:
             name = m["name"]
+            display = m.get("display_name") or ""
             score = 0.0
             match_type = "none"
 
-            if name in query_stripped:
-                score = 0.98
-                match_type = "name_in_query"
-            elif query_stripped in name:
-                score = 0.85
-                match_type = "query_in_name"
-            else:
-                ratio = SequenceMatcher(None, query_stripped, name).ratio()
-                if ratio > 0.35:
-                    score = 0.45 + ratio * 0.35
-                    match_type = "fuzzy"
+            # 匹配 name 或 display_name (取较高分)
+            for text in (name, display):
+                if not text:
+                    continue
+                if text in query_stripped:
+                    s = 0.98
+                    mt = "name_in_query"
+                elif query_stripped in text:
+                    s = 0.85
+                    mt = "query_in_name"
+                else:
+                    ratio = SequenceMatcher(None, query_stripped, text).ratio()
+                    if ratio > 0.35:
+                        s = 0.45 + ratio * 0.35
+                        mt = "fuzzy"
+                    else:
+                        continue
+                if s > score:
+                    score = s
+                    match_type = mt
 
             # 向量候选加分
             if vector_candidates and m["metric_id"] in vector_candidates and match_type != "none":
