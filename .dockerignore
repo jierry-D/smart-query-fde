@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.db
+*.log
+logs/
+.git/
+.pytest_cache/
+chroma/
+*.egg-info/
