@@ -19,6 +19,8 @@ def list_metrics(category: str = None, user: dict = Depends(get_current_user)):
     db = _get_db()
     loader = MetricLoader(db)
     metrics = loader.list_all(category)
+    from ...core.domain_isolation import filter_metrics_by_domain
+    metrics = filter_metrics_by_domain(metrics, user)
     return {
         "metrics": metrics,
         "total": len(metrics),
