@@ -169,3 +169,104 @@ class DatabaseConnector:
                 (query_log_id, user_id, rating, comment, suggested_sql),
             )
             return cur.lastrowid
+
+
+# ═══════════════════════════════════════════
+# PostgreSQL 连接器 (生产环境)
+# ═══════════════════════════════════════════
+
+class PostgresConnector:
+    """PostgreSQL — 与 DatabaseConnector 接口兼容"""
+
+    def __init__(self, dsn: str = None):
+        self.dsn = dsn or config.db_path
+        self._pool = None
+
+    def _get_pool(self):
+        if self._pool is None:
+            try:
+                from psycopg2 import pool
+                dsn = self.dsn if self.dsn.startswith("postgres") else (
+                    "host=localhost port=5432 dbname=smart_query "
+                    "user=smart_query password=smart_query"
+                )
+                self._pool = pool.ThreadedConnectionPool(1, 10, dsn)
+                logger.info("PostgreSQL pool created")
+            except ImportError:
+                raise RuntimeError("psycopg2 not installed")
+        return self._pool
+
+    @contextmanager
+    def connect(self):
+        pool = self._get_pool()
+        conn = pool.getconn()
+        try:
+            yield conn; conn.commit()
+        except Exception:
+            conn.rollback(); raise
+        finally:
+            pool.putconn(conn)
+
+    def execute(self, sql: str, params: tuple = ()) -> list[dict]:
+        pg_sql = sql.replace('?', '%s')
+        with self.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(pg_sql, params)
+            if cur.description:
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, r)) for r in cur.fetchall()]
+            return []
+
+    def execute_one(self, sql: str, params: tuple = ()) -> dict | None:
+        rows = self.execute(sql, params)
+        return rows[0] if rows else None
+
+    def execute_write(self, sql: str, params: tuple = ()) -> int:
+        with self.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(sql.replace('?', '%s'), params)
+            return cur.rowcount
+
+    def insert_and_get_id(self, sql: str, params: tuple = ()) -> int:
+        pg_sql = sql.replace('?', '%s').rstrip(';') + ' RETURNING id'
+        with self.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(pg_sql, params)
+            row = cur.fetchone()
+            return row[0] if row else 0
+
+    def get_tables(self) -> list[str]:
+        rows = self.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public'")
+        return [r["table_name"] for r in rows]
+
+    def table_exists(self, name: str) -> bool:
+        return self.execute_one("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=%s", (name,)) is not None
+
+    def get_table_schema(self, tn: str) -> list[dict]:
+        return self.execute("SELECT column_name AS name, data_type AS type FROM information_schema.columns WHERE table_name=%s ORDER BY ordinal_position", (tn,))
+
+    def get_snapshots(self) -> list[dict]:
+        return self.execute("SELECT * FROM data_snapshots ORDER BY data_period")
+
+    def get_latest_snapshot(self) -> dict | None:
+        return self.execute_one("SELECT * FROM data_snapshots ORDER BY ingestion_time DESC LIMIT 1")
+
+    def get_all_users(self) -> list[dict]:
+        return self.execute("SELECT * FROM users ORDER BY user_id")
+
+    def get_user_by_username(self, username: str) -> dict | None:
+        return self.execute_one("SELECT * FROM users WHERE username=%s", (username,))
+
+    def get_query_history(self, user_id: int = None, limit: int = 50) -> list[dict]:
+        if user_id:
+            return self.execute("SELECT * FROM query_logs WHERE user_id=%s ORDER BY created_at DESC LIMIT %s", (user_id, limit))
+        return self.execute("SELECT * FROM query_logs ORDER BY created_at DESC LIMIT %s", (limit,))
+
+    def log_query(self, **kwargs) -> int:
+        fields = ["user_id","username","role","original_query","cleaned_query","generated_sql","intent","complexity","exec_time_ms","row_count","status","error_message","snapshot_ids"]
+        vals = [kwargs.get(f) for f in fields]
+        ph = ",".join(["%s"]*len(fields))
+        return self.insert_and_get_id(f"INSERT INTO query_logs ({','.join(fields)}) VALUES ({ph})", tuple(vals))
+
+    def save_feedback(self, query_log_id: int, user_id: int, rating: str, comment: str = "", suggested_sql: str = "") -> int:
+        return self.insert_and_get_id("INSERT INTO query_feedback (query_log_id,user_id,rating,comment,suggested_sql) VALUES (%s,%s,%s,%s,%s)", (query_log_id,user_id,rating,comment,suggested_sql))

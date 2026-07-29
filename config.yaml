@@ -9,6 +9,26 @@ cors:
 database:
   path: backend/db/smart_query.db
   type: sqlite  # sqlite | postgresql
+  # PostgreSQL 连接 (type=postgresql 时生效)
+  postgresql:
+    host: localhost
+    port: 5432
+    dbname: smart_query
+    user: smart_query
+    password: smart_query
+    pool_min: 1
+    pool_max: 10
+
+# 限流
+rate_limit:
+  user_per_minute: 30
+  ip_per_minute: 100
+
+# 缓存
+cache:
+  type: memory  # memory | redis
+  redis_url: redis://localhost:6379/0
+  ttl_seconds: 300
 
 # Web 服务
 web:

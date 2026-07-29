@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse
 
 from .config import config
 from .core.logging import init_logging, get_logger
+from .core.rate_limiter import check_rate_limit
 
 logger = get_logger(__name__)
 
@@ -26,6 +27,34 @@ def create_app() -> FastAPI:
         description="企业级 NL2SQL 智能数据查询系统 — 支持三级 RBAC 权限",
         version="2.0.0",
     )
+
+    # Rate Limiter 中间件
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from fastapi import Request
+    from fastapi.responses import JSONResponse
+
+    class RateLimitMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            # 跳过静态文件/文档/本地请求
+            if request.url.path.startswith(("/static", "/docs", "/openapi.json")):
+                return await call_next(request)
+            client_ip = request.client.host if request.client else "127.0.0.1"
+            if client_ip in ("127.0.0.1", "localhost", "::1", "testclient"):
+                return await call_next(request)
+            user_id = 0
+            # 尝试从 Authorization header 解码用户ID (简化)
+            result = check_rate_limit(user_id, client_ip)
+            if not result["allowed"]:
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": result["reason"], "retry_after": result["retry_after"]},
+                    headers={"X-RateLimit-Remaining": "0", "Retry-After": str(result["retry_after"])},
+                )
+            response = await call_next(request)
+            response.headers["X-RateLimit-Remaining"] = str(result["remaining"])
+            return response
+
+    app.add_middleware(RateLimitMiddleware)
 
     # CORS (从配置读取)
     cors_origins = getattr(config, 'cors_origins', ["*"])
@@ -74,6 +103,12 @@ def create_app() -> FastAPI:
                 "SELECT * FROM metric_registry WHERE status='available'"
             )),
             "users": len(db.get_all_users()),
+            "rate_limit": {
+                "user_per_minute": config._get("rate_limit", "user_per_minute", default=30),
+                "ip_per_minute": config._get("rate_limit", "ip_per_minute", default=100),
+            },
+            "cache_type": config._get("cache", "type", default="memory"),
+            "db_type": config.db_type,
         }
 
     @app.get("/")
