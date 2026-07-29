@@ -262,8 +262,8 @@ class NL2SQLPipeline:
             ctx.add_stage("反问澄清", "done", 0, f"意图={intent}, 默认最新数据")
             return None
 
-        if not has_time and not has_dimension and query_len < 8:
-            # 查询太模糊: 既没时间也没维度
+        if not has_time and not has_dimension and query_len < 4:
+            # 查询太短: 既没时间也没维度 (≤3字符才反问)
             ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
                           "缺少时间和筛选条件, 提供时间选项")
             return {

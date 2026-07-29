@@ -14,6 +14,82 @@ from ...schemas import ChatRequest
 
 router = APIRouter(prefix="/api", tags=["对话"])
 
+# ── 仪表盘 ──
+
+@router.get("/dashboard")
+def get_dashboard(user: dict = Depends(get_current_user)):
+    """获取仪表盘数据 — 核心经营指标一览"""
+    db = _get_db()
+
+    from ...engine.pipeline import NL2SQLPipeline
+    pipe = NL2SQLPipeline(db)
+
+    # 关键指标查询
+    key_metrics = [
+        ("年度累计中标总额", "💰", "中标总额"),
+        ("本期签约额", "📝", "本期签约"),
+        ("商机签约转化率", "📈", "签约转化率"),
+        ("应收账款总余额", "💳", "应收余额"),
+        ("存量客户总数", "👥", "客户总数"),
+        ("正常跟进商机数量", "🎯", "在跟商机"),
+    ]
+
+    cards = []
+    for metric_name, icon, label in key_metrics:
+        try:
+            r = pipe.run(metric_name, user)
+            alert = r.get("alert_level", "")
+            cards.append({
+                "label": label,
+                "icon": icon,
+                "value": r.get("value"),
+                "unit": r.get("unit", ""),
+                "type": r.get("type", "number"),
+                "alert_level": alert,
+                "metric_name": metric_name,
+            })
+        except Exception:
+            cards.append({
+                "label": label, "icon": icon,
+                "value": None, "unit": "", "alert_level": "",
+                "metric_name": metric_name,
+            })
+
+    # 区域分布
+    distribution = None
+    try:
+        r = pipe.run("各地市中标额", user)
+        if r.get("type") == "table" and r.get("rows"):
+            distribution = {
+                "labels": [row.get("label", "") for row in r["rows"][:10]],
+                "values": [row.get("value", 0) for row in r["rows"][:10]],
+            }
+    except Exception:
+        pass
+
+    # 预警指标
+    alerts = []
+    for metric_name in ["大额逾期应收款金额", "长期停滞商机数量"]:
+        try:
+            r = pipe.run(metric_name, user)
+            if r.get("value") and r.get("alert_level"):
+                alerts.append({
+                    "metric": metric_name,
+                    "value": r["value"],
+                    "unit": r.get("unit", ""),
+                    "alert_level": r["alert_level"],
+                })
+        except Exception:
+            pass
+
+    return {
+        "cards": cards,
+        "distribution": distribution,
+        "alerts": alerts,
+        "updated_at": db.get_latest_snapshot().get("data_period", "") if db.get_latest_snapshot() else "",
+        "metrics_total": len(db.execute("SELECT * FROM metric_registry WHERE status='available'")),
+    }
+
 # ── CSV 导出 ──
 
 @router.post("/export/csv")

@@ -58,7 +58,8 @@
     <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
       <nav class="side-nav">
-        <a onclick="newChat()" class="nav-item active" id="navChat">💬 智能问数</a>
+        <a onclick="showDashboard()" class="nav-item active" id="navDashboard">📊 经营仪表盘</a>
+        <a onclick="newChat()" class="nav-item" id="navChat">💬 智能问数</a>
         <a onclick="showMetrics()" class="nav-item" id="navMetrics">📋 指标目录</a>
         <a onclick="showSnapshots()" class="nav-item" id="navSnapshots">📦 数据管理</a>
         <a id="navImport" onclick="showImport()" class="nav-item" style="display:none">📤 导入数据</a>
@@ -71,8 +72,16 @@
 
     <!-- Content -->
     <main class="content" id="mainContent">
+      <!-- Dashboard View -->
+      <div id="dashboardView" class="view active">
+        <div class="view-header"><h2>📊 经营仪表盘</h2><span id="dashboardPeriod" style="font-size:.8rem;color:var(--c-text-secondary)"></span></div>
+        <div class="view-body" id="dashboardContent">
+          <div class="loading-spinner"><div class="spinner"></div>加载仪表盘...</div>
+        </div>
+      </div>
+
       <!-- Chat View -->
-      <div id="chatView" class="view active">
+      <div id="chatView" class="view">
         <div class="chat-messages" id="chatMessages">
           <div class="welcome-msg">
             <div class="welcome-big">🔍</div>
