@@ -47,9 +47,17 @@ def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
 def _handle_query(query: str, db: DatabaseConnector, user: dict) -> dict:
     """完整的 NL2SQL 查询流水线 — 使用 Pipeline + Governance 模块"""
 
+    # 尝试初始化 LLM (可选, 无 Key 时降级为模板)
+    llm = None
+    try:
+        from ...llm.deepseek import get_llm
+        llm = get_llm()
+    except Exception:
+        pass
+
     # 使用统一流水线
     from ...engine.pipeline import NL2SQLPipeline
-    pipeline = NL2SQLPipeline(db)
+    pipeline = NL2SQLPipeline(db, llm_provider=llm)
     result = pipeline.run(query, user)
 
     # 记录查询日志

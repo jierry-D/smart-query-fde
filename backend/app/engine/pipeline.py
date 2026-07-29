@@ -169,6 +169,8 @@ class NL2SQLPipeline:
             return False
 
         best = results[0]
+        ctx.matched_metric = best["metric"]
+        ctx.matched_metric["_match_score"] = best["score"]  # 传递匹配分数供 Stage 4 决策
         has_ner = ctx.entities.get("filters") or ctx.entities.get("group_by")
         if best["score"] != 1.0 and not has_ner:
             ctx.add_stage("指标匹配", "error", (time.perf_counter() - t3) * 1000,
@@ -176,7 +178,6 @@ class NL2SQLPipeline:
             ctx._suggestions = [r["metric"]["name"] for r in results]
             return False
 
-        ctx.matched_metric = best["metric"]
         ctx.add_stage("指标匹配", "done", (time.perf_counter() - t3) * 1000,
                       f"{best['metric']['name']} (score={best['score']:.2f})")
         return True
@@ -187,7 +188,37 @@ class NL2SQLPipeline:
         t4 = time.perf_counter()
         from .sql_filter import apply_entities
 
-        sql = ctx.matched_metric["sql_template"]
+        sql = ctx.matched_metric.get("sql_template", "")
+        match_score = ctx.matched_metric.get("_match_score", 1.0)
+        gen_method = "模板"
+
+        # 决策: 模板匹配分数高 → 用模板; 分数低或LLM可用 → 尝试LLM增强
+        if sql and match_score >= 0.8:
+            # 高置信度: 直接用模板
+            pass
+        elif self.llm and sql:
+            # 中置信度 + LLM可用: 用LLM优化SQL
+            try:
+                llm_sql = self._try_llm_sql(ctx, sql)
+                if llm_sql:
+                    sql = llm_sql
+                    gen_method = "LLM增强"
+            except Exception as e:
+                logger.warning("LLM SQL 生成失败: %s, 回退模板", e)
+        elif self.llm and not sql:
+            # 无模板 + LLM可用: 完全由LLM生成
+            try:
+                llm_sql = self._try_llm_sql(ctx, None)
+                if llm_sql:
+                    sql = llm_sql
+                    gen_method = "LLM生成"
+            except Exception as e:
+                logger.warning("LLM SQL 生成失败: %s", e)
+
+        if not sql:
+            ctx.add_stage("SQL生成", "error", (time.perf_counter() - t4) * 1000,
+                          "无法生成SQL")
+            raise ValueError("无法生成SQL: 无模板且LLM不可用")
 
         # 应用 NER 实体
         if ctx.entities.get("filters") or ctx.entities.get("group_by") or ctx.entities.get("order"):
@@ -195,7 +226,82 @@ class NL2SQLPipeline:
 
         ctx.generated_sql = sql
         ctx.add_stage("SQL生成", "done", (time.perf_counter() - t4) * 1000,
-                      "模板生成")
+                      gen_method)
+
+    def _try_llm_sql(self, ctx: PipelineContext, base_template: str | None = None) -> str | None:
+        """使用 LLM 生成/优化 SQL (同步包装)"""
+        import asyncio
+        import concurrent.futures
+
+        from ..llm.prompts import PromptManager
+
+        pm = PromptManager()
+
+        # 构建上下文
+        metric = ctx.matched_metric or {}
+        tables_info = self._get_tables_info(ctx)
+
+        # 渲染提示词
+        if base_template:
+            prompt = pm.render("sql_generator", **{
+                "query": ctx.query,
+                "metric": metric,
+                "base_sql": base_template,
+                "tables": tables_info,
+                "entities": ctx.entities,
+            })
+        else:
+            prompt = pm.render("sql_generator", **{
+                "query": ctx.query,
+                "tables": tables_info,
+                "entities": ctx.entities,
+            })
+
+        messages = [{"role": "user", "content": prompt}]
+
+        # 同步调用异步LLM (适配FastAPI事件循环环境)
+        result = self._run_async(self.llm.chat(messages))
+        if not result or "SELECT" not in result.upper():
+            return None
+
+        # 提取SQL (去除markdown包裹)
+        import re
+        m = re.search(r'```(?:sql)?\s*\n?(SELECT[\s\S]*?)\n?```', result, re.IGNORECASE)
+        if m:
+            return m.group(1).strip()
+        m = re.search(r'(SELECT[\s\S]*)', result, re.IGNORECASE)
+        if m:
+            return m.group(1).strip().rstrip(';').strip()
+        return None
+
+    @staticmethod
+    def _run_async(coro):
+        """在线程池中运行异步协程, 兼容同步调用场景"""
+        import asyncio
+        import concurrent.futures
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            future = pool.submit(asyncio.run, coro)
+            return future.result(timeout=30)
+
+    def _get_tables_info(self, ctx: PipelineContext) -> str:
+        """获取相关表结构信息"""
+        tables = []
+        metric = ctx.matched_metric or {}
+        table_name = metric.get("table_name", "")
+        if table_name:
+            try:
+                info = ctx.db.get_table_schema(table_name)
+                if info:
+                    cols = ", ".join(f"{c['name']}({c['type']})" for c in info)
+                    tables.append(f"表 {table_name}: {cols}")
+            except Exception:
+                tables.append(f"表: {table_name}")
+        return "\n".join(tables)
 
     # ── Stage 5: Governance ──
 
