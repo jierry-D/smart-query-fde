@@ -518,6 +518,45 @@ async function adminTab(tab, btn) {
         });
         c.innerHTML = h; break;
       }
+      case 'suggestions': {
+        c.innerHTML = '<div class="loading-spinner"><div class="spinner"></div>加载建议...</div>';
+        try {
+          const d = await api('/api/admin/suggestions?limit=50');
+          let h = `<h3 style="margin-bottom:8px">💡 反馈改进建议</h3>
+            <div style="display:flex;gap:16px;margin-bottom:16px;font-size:.85rem;color:var(--c-text-secondary)">
+              <span>总计: ${d.stats.total||0}</span>
+              <span style="color:var(--c-warning)">待处理: ${d.stats.pending||0}</span>
+              <span style="color:var(--c-success)">已应用: ${d.stats.applied||0}</span>
+            </div>`;
+
+          if (d.items && d.items.length > 0) {
+            d.items.forEach(item => {
+              const typeLabels = { sql_correction: '🔧 SQL修正', term_mapping: '📝 术语映射', general_improvement: '💬 改进建议' };
+              h += `<div style="background:var(--c-surface);border-radius:8px;padding:12px;margin-bottom:8px;box-shadow:var(--shadow)">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                  <span><strong>${typeLabels[item.suggestion_type]||item.suggestion_type}</strong></span>
+                  <span style="font-size:.72rem;color:var(--c-text-secondary)">${(item.created_at||'').slice(0,16)}</span>
+                </div>
+                <div style="font-size:.82rem;color:var(--c-text-secondary);margin-bottom:4px">${esc(item.user_comment)}</div>
+                <div style="font-size:.78rem;background:#f1f5f9;padding:6px 8px;border-radius:4px;margin-bottom:8px">
+                  <span style="color:var(--c-text-secondary)">原始查询: </span>${esc(item.original_query||'?')}
+                  ${item.matched_metric ? `<span style="margin-left:12px;color:var(--c-text-secondary)">匹配: </span>${esc(item.matched_metric)}` : ''}
+                </div>
+                <div>
+                  <button class="btn-sm" style="background:var(--c-success);color:#fff" onclick="applySuggestion(${item.suggestion_id})">✅ 应用</button>
+                  <button class="btn-sm btn-danger" style="margin-left:4px" onclick="dismissSuggestion(${item.suggestion_id})">❌ 忽略</button>
+                </div>
+              </div>`;
+            });
+          } else {
+            h += '<div style="padding:40px;text-align:center;color:var(--c-text-secondary)">暂无改进建议。当用户对查询结果不满意并提供反馈时，系统会自动分析生成建议。</div>';
+          }
+          c.innerHTML = h;
+        } catch(e) {
+          c.innerHTML = `<div class="error-box"><div class="err-title">加载失败</div>${esc(e.message)}</div>`;
+        }
+        break;
+      }
       case 'onboarding': {
         c.innerHTML = '<div class="loading-spinner"><div class="spinner"></div>扫描数据表...</div>';
         try {
@@ -684,6 +723,15 @@ async function onboardReject(queueId) {
   const reason = prompt('拒绝原因 (可选):');
   await api(`/api/admin/onboarding/reject/${queueId}?reason=${encodeURIComponent(reason||'')}`, { method: 'POST' });
   adminTab('onboarding');
+}
+
+async function applySuggestion(sid) {
+  await api(`/api/admin/suggestions/${sid}/apply`, { method: 'POST' });
+  adminTab('suggestions');
+}
+async function dismissSuggestion(sid) {
+  await api(`/api/admin/suggestions/${sid}/dismiss`, { method: 'POST' });
+  adminTab('suggestions');
 }
 
 // ── Helpers ──

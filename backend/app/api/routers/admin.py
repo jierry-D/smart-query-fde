@@ -195,6 +195,34 @@ def onboarding_reject(queue_id: int, reason: str = "",
     return {"status": "rejected", "queue_id": queue_id}
 
 
+# ── 反馈分析 (仅 admin) ──
+
+@router.get("/suggestions")
+def list_suggestions(limit: int = 20, user: dict = Depends(require_admin)):
+    """获取反馈改进建议列表"""
+    from ...governance.feedback_analyzer import FeedbackAnalyzer
+    analyzer = FeedbackAnalyzer(_get_db())
+    items = analyzer.list_pending(limit)
+    stats = analyzer.get_stats()
+    return {"items": [dict(r) for r in items], "stats": stats}
+
+
+@router.post("/suggestions/{suggestion_id}/apply")
+def apply_suggestion(suggestion_id: int, user: dict = Depends(require_admin)):
+    """应用一条改进建议"""
+    from ...governance.feedback_analyzer import FeedbackAnalyzer
+    analyzer = FeedbackAnalyzer(_get_db())
+    return analyzer.apply_suggestion(suggestion_id)
+
+
+@router.post("/suggestions/{suggestion_id}/dismiss")
+def dismiss_suggestion(suggestion_id: int, user: dict = Depends(require_admin)):
+    """忽略一条改进建议"""
+    from ...governance.feedback_analyzer import FeedbackAnalyzer
+    analyzer = FeedbackAnalyzer(_get_db())
+    return analyzer.dismiss_suggestion(suggestion_id)
+
+
 def _table_exists(db, name):
     try:
         safe = name.replace('"', '""')
