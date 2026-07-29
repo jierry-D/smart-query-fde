@@ -122,9 +122,83 @@ def list_db_tables(admin: dict = Depends(require_admin)):
     return {"tables": result}
 
 
+# ── 数据接入流水线 (仅 admin) ──
+
+@router.get("/onboarding/scan")
+def onboarding_scan(user: dict = Depends(require_admin)):
+    """Step 1-2: 扫描数据库, 发现可接入的表"""
+    from ...onboarding.pipeline import OnboardingPipeline
+    pipe = OnboardingPipeline(_get_db())
+    return pipe.run_discovery()
+
+
+@router.get("/onboarding/analyze/{table_name}")
+def onboarding_analyze(table_name: str, user: dict = Depends(require_admin)):
+    """Step 1-4: 分析单个表 (元数据+质量+类型), 不入库"""
+    from ...onboarding.pipeline import MetadataExtractor, QualityAssessor, TypeInferrer
+    db = _get_db()
+    if not _table_exists(db, table_name):
+        raise HTTPException(404, f"表 {table_name} 不存在")
+
+    metadata = MetadataExtractor(db).extract(table_name)
+    quality = QualityAssessor().assess(metadata)
+    ds_type = TypeInferrer().infer(metadata)
+
+    return {
+        "table_name": table_name,
+        "metadata": metadata,
+        "quality": quality,
+        "dataset_type": ds_type,
+    }
+
+
+@router.post("/onboarding/submit/{table_name}")
+def onboarding_submit(table_name: str, auto_approve: bool = False,
+                      user: dict = Depends(require_admin)):
+    """Step 1-7: 运行完整接入流程"""
+    from ...onboarding.pipeline import OnboardingPipeline
+    db = _get_db()
+    if not _table_exists(db, table_name):
+        raise HTTPException(404, f"表 {table_name} 不存在")
+
+    pipe = OnboardingPipeline(db)
+    return pipe.run_full(table_name, auto_approve=auto_approve)
+
+
+@router.get("/onboarding/queue")
+def onboarding_queue(user: dict = Depends(require_admin)):
+    """获取审核队列"""
+    from ...onboarding.pipeline import OnboardingReviewer
+    reviewer = OnboardingReviewer(_get_db())
+    items = reviewer.list_pending()
+    stats = reviewer.get_stats()
+    return {"items": [dict(r) for r in items], "stats": stats}
+
+
+@router.post("/onboarding/approve/{queue_id}")
+def onboarding_approve(queue_id: int, user: dict = Depends(require_admin)):
+    """审核通过并注册"""
+    from ...onboarding.pipeline import OnboardingPipeline
+    pipe = OnboardingPipeline(_get_db())
+    return pipe.approve_and_register(queue_id, reviewer=user["username"])
+
+
+@router.post("/onboarding/reject/{queue_id}")
+def onboarding_reject(queue_id: int, reason: str = "",
+                      user: dict = Depends(require_admin)):
+    """审核拒绝"""
+    from ...onboarding.pipeline import OnboardingReviewer
+    reviewer = OnboardingReviewer(_get_db())
+    result = reviewer.reject(queue_id, user["username"], reason)
+    if not result:
+        raise HTTPException(404, "审核项不存在")
+    return {"status": "rejected", "queue_id": queue_id}
+
+
 def _table_exists(db, name):
     try:
-        db.execute(f"SELECT 1 FROM {name} LIMIT 0")
+        safe = name.replace('"', '""')
+        db.execute(f'SELECT 1 FROM "{safe}" LIMIT 0')
         return True
     except Exception:
         return False

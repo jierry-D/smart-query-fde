@@ -518,6 +518,63 @@ async function adminTab(tab, btn) {
         });
         c.innerHTML = h; break;
       }
+      case 'onboarding': {
+        c.innerHTML = '<div class="loading-spinner"><div class="spinner"></div>扫描数据表...</div>';
+        try {
+          // 扫描可接入的表
+          const scan = await api('/api/admin/onboarding/scan');
+          let h = `<h3 style="margin-bottom:8px">🔌 数据接入流水线</h3>
+            <p style="color:var(--c-text-secondary);font-size:.85rem;margin-bottom:16px">
+            自动发现数据库中的业务表, 评估质量, 生成指标, 提交审核</p>`;
+
+          if (scan.tables && scan.tables.length > 0) {
+            h += `<table class="data-table"><thead><tr>
+              <th>表名</th><th>行数</th><th>列数</th><th>字段数</th><th>操作</th>
+            </tr></thead><tbody>`;
+            scan.tables.forEach(t => {
+              h += `<tr>
+                <td><strong>${esc(t.table_name)}</strong></td>
+                <td>${(t.row_count||0).toLocaleString()}</td>
+                <td>${t.column_count||0}</td>
+                <td>${t.fields||0}</td>
+                <td>
+                  <button class="btn-sm btn-primary" onclick="onboardAnalyze('${esc(t.table_name)}')">分析</button>
+                  <button class="btn-sm" style="background:var(--c-success);color:#fff;margin-left:4px" onclick="onboardSubmit('${esc(t.table_name)}')">一键接入</button>
+                </td>
+              </tr>`;
+            });
+            h += '</tbody></table>';
+          } else {
+            h += '<div style="padding:20px;text-align:center;color:var(--c-text-secondary)">未发现可接入的业务表</div>';
+          }
+
+          // 审核队列
+          try {
+            const q = await api('/api/admin/onboarding/queue');
+            if (q.items && q.items.length > 0) {
+              h += `<h3 style="margin:24px 0 8px">📋 审核队列 (${q.items.length})</h3>`;
+              h += '<table class="data-table"><thead><tr><th>表名</th><th>质量分</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+              q.items.forEach(item => {
+                h += `<tr>
+                  <td>${esc(item.table_name)}</td>
+                  <td><span style="font-weight:700;color:${item.quality_score>=75?'var(--c-success)':item.quality_score>=60?'var(--c-warning)':'var(--c-danger)'}">${item.quality_score}分</span></td>
+                  <td>${item.status==='pending'?'⏳待审核':item.status}</td>
+                  <td>
+                    <button class="btn-sm" style="background:var(--c-success);color:#fff" onclick="onboardApprove(${item.queue_id})">通过</button>
+                    <button class="btn-sm btn-danger" style="margin-left:4px" onclick="onboardReject(${item.queue_id})">拒绝</button>
+                  </td>
+                </tr>`;
+              });
+              h += '</tbody></table>';
+            }
+          } catch(e) {}
+
+          c.innerHTML = h;
+        } catch(e) {
+          c.innerHTML = `<div class="error-box"><div class="err-title">扫描失败</div>${esc(e.message)}</div>`;
+        }
+        break;
+      }
     }
   } catch(e) {
     c.innerHTML = `<div class="error-box"><div class="err-title">加载失败</div>${esc(e.message)}</div>`;
@@ -548,6 +605,85 @@ async function addUser() {
   const data = { username: gid('nu').value, password: gid('np').value, display_name: gid('nd').value, role: gid('nr').value, department: gid('ndep').value, region: gid('nreg').value };
   await api('/api/admin/users', { method: 'POST', body: JSON.stringify(data) });
   adminTab('users');
+}
+
+// ── Onboarding ──
+async function onboardAnalyze(tableName) {
+  const c = gid('adminContent');
+  c.innerHTML = '<div class="loading-spinner"><div class="spinner"></div>分析中...</div>';
+  try {
+    const d = await api(`/api/admin/onboarding/analyze/${encodeURIComponent(tableName)}`);
+    let h = `<h3>📊 ${esc(tableName)} 分析报告</h3>`;
+
+    // 质量评分
+    const q = d.quality;
+    const gradeColor = q.score >= 75 ? 'var(--c-success)' : q.score >= 60 ? 'var(--c-warning)' : 'var(--c-danger)';
+    h += `<div style="display:flex;gap:16px;margin:12px 0">
+      <div class="stat-card"><div class="stat-num" style="color:${gradeColor}">${q.score}</div><div>质量评分 (${q.grade})</div></div>
+      <div class="stat-card"><div class="stat-num">${q.total_issues}</div><div>问题数</div></div>
+      <div class="stat-card"><div class="stat-num">${d.dataset_type.type}</div><div>数据集类型</div></div>
+    </div>`;
+
+    // 字段详情
+    if (d.metadata && d.metadata.fields) {
+      h += '<h4 style="margin-top:16px">字段列表</h4>';
+      h += '<table class="data-table"><thead><tr><th>字段</th><th>类型</th><th>示例值</th></tr></thead><tbody>';
+      d.metadata.fields.forEach(f => {
+        h += `<tr><td>${esc(f.name)}</td><td>${esc(f.python_type)}</td>
+          <td style="font-size:.72rem;color:var(--c-text-secondary)">${esc((f.sample_values||[]).join(', '))}</td></tr>`;
+      });
+      h += '</tbody></table>';
+    }
+
+    // 问题列表
+    if (q.issues && q.issues.length > 0) {
+      h += '<h4 style="margin-top:16px;color:var(--c-warning)">⚠️ 质量问题</h4>';
+      q.issues.forEach(fi => {
+        h += `<div style="margin:4px 0;font-size:.82rem"><strong>${esc(fi.field)}:</strong> `;
+        fi.issues.forEach(iss => {
+          h += `<span style="color:var(--c-text-secondary)">${esc(iss.suggestion)}</span> `;
+        });
+        h += '</div>';
+      });
+    }
+
+    h += `<div style="margin-top:16px">
+      <button class="btn-primary" onclick="onboardSubmit('${esc(tableName)}')">一键接入</button>
+      <button class="btn-secondary" style="margin-left:8px" onclick="adminTab('onboarding')">返回</button>
+    </div>`;
+    c.innerHTML = h;
+  } catch(e) {
+    c.innerHTML = `<div class="error-box"><div class="err-title">分析失败</div>${esc(e.message)}</div>`;
+  }
+}
+
+async function onboardSubmit(tableName) {
+  const c = gid('adminContent');
+  c.innerHTML = '<div class="loading-spinner"><div class="spinner"></div>接入中...</div>';
+  try {
+    const d = await api(`/api/admin/onboarding/submit/${encodeURIComponent(tableName)}?auto_approve=true`, { method: 'POST' });
+    let h = `<h3>✅ ${esc(tableName)} 接入完成</h3>`;
+    h += `<div style="margin:8px 0">质量评分: <strong>${d.quality.score}分 (${d.quality.grade})</strong></div>`;
+    h += `<div>数据集类型: <strong>${d.dataset_type.type}</strong> (置信度: ${(d.dataset_type.confidence*100).toFixed(0)}%)</div>`;
+    if (d.registration) {
+      h += `<div style="margin-top:8px;color:var(--c-success)">✅ 已创建 ${d.registration.metrics_created} 个指标</div>`;
+    }
+    h += '<div style="margin-top:16px"><button class="btn-primary" onclick="adminTab(\'onboarding\')">返回</button></div>';
+    c.innerHTML = h;
+  } catch(e) {
+    c.innerHTML = `<div class="error-box"><div class="err-title">接入失败</div>${esc(e.message)}</div>`;
+  }
+}
+
+async function onboardApprove(queueId) {
+  await api(`/api/admin/onboarding/approve/${queueId}`, { method: 'POST' });
+  adminTab('onboarding');
+}
+
+async function onboardReject(queueId) {
+  const reason = prompt('拒绝原因 (可选):');
+  await api(`/api/admin/onboarding/reject/${queueId}?reason=${encodeURIComponent(reason||'')}`, { method: 'POST' });
+  adminTab('onboarding');
 }
 
 // ── Helpers ──
