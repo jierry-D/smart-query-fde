@@ -7,6 +7,34 @@ let token = null;
 let user = null;
 let msgId = 0;
 
+// ── Placeholder rotation ──
+const GUIDANCE_PLACEHOLDERS = [
+  "试试问: Q3 年度累计中标总额",
+  "试试问: 本月 南宁市 本期签约额",
+  "试试问: Top 10 各地市中标额",
+  "试试问: 各业务线中标金额占比",
+  "试试问: 同比 商机签约转化率",
+  "试试问: 逾期应收账款金额",
+];
+let placeholderIdx = 0;
+
+function rotatePlaceholder() {
+  const inp = document.getElementById('queryInput');
+  if (!inp || document.activeElement === inp) return; // 用户正在输入时不轮换
+  inp.placeholder = GUIDANCE_PLACEHOLDERS[placeholderIdx];
+  placeholderIdx = (placeholderIdx + 1) % GUIDANCE_PLACEHOLDERS.length;
+}
+
+// ── Query history (localStorage) ──
+function getRecentQueries() {
+  try { return JSON.parse(localStorage.getItem('sq2_recent') || '[]'); } catch(e) { return []; }
+}
+function addRecentQuery(q) {
+  let recent = getRecentQueries();
+  recent = [q, ...recent.filter(r => r !== q)].slice(0, 10);
+  localStorage.setItem('sq2_recent', JSON.stringify(recent));
+}
+
 // ── Init ──
 window.onload = () => {
   const s = localStorage.getItem('sq2');
@@ -15,6 +43,8 @@ window.onload = () => {
   }
   if (token) { showApp(); loadStatus(); } else { showLogin(); }
   setInterval(loadStatus, 60000);
+  setInterval(rotatePlaceholder, 4000);
+  rotatePlaceholder();
 };
 
 // ── API ──
@@ -73,7 +103,34 @@ async function loadStatus() {
 }
 
 // ── Navigation ──
-function newChat() { switchView('chatView'); setActiveNav('navChat'); }
+function newChat() {
+  switchView('chatView'); setActiveNav('navChat');
+  // 显示欢迎信息和最近查询
+  const msgs = gid('chatMessages');
+  const recent = getRecentQueries();
+  let recentHtml = '';
+  if (recent.length > 0) {
+    recentHtml = '<div style="margin-top:16px"><div style="font-size:.8rem;color:var(--c-text-secondary);margin-bottom:8px">🕐 最近查询</div>';
+    recent.slice(0, 5).forEach(q => {
+      recentHtml += `<button class="clarify-opt" style="margin:2px 4px" onclick="quickQuery('${esc(q)}')">${esc(q)}</button>`;
+    });
+    recentHtml += '</div>';
+  }
+  msgs.innerHTML = `<div class="welcome-msg">
+    <div class="welcome-big">🤖</div>
+    <h2>智慧问数系统 v2.0</h2>
+    <p>用自然语言查询企业数据 — 试试下面的示例或直接输入问题</p>
+    <div class="quick-actions">
+      <button onclick="quickQuery('Q3 年度累计中标总额')">📊 Q3中标总额</button>
+      <button onclick="quickQuery('本月 南宁市 本期签约额')">📋 本月南宁签约</button>
+      <button onclick="quickQuery('Top 10 各地市中标额')">🏆 各地市排名</button>
+      <button onclick="quickQuery('各业务线中标金额占比')">📈 业务线分布</button>
+      <button onclick="quickQuery('同比 商机签约转化率')">📉 同比转化率</button>
+      <button onclick="quickQuery('/list')">📋 查看所有指标</button>
+    </div>
+    ${recentHtml}
+  </div>`;
+}
 function showMetrics() { switchView('metricsView'); setActiveNav('navMetrics'); loadMetrics(); }
 function showSnapshots() { switchView('snapshotsView'); setActiveNav('navSnapshots'); loadSnapshots(); }
 function showImport() { switchView('importView'); setActiveNav('navImport'); }
@@ -119,6 +176,7 @@ async function doQuery() {
     const d = await api('/api/chat', { method: 'POST', body: JSON.stringify({ q }) });
     const el = gid('msg-' + lid);
     if (el) el.innerHTML = renderResponse(d);
+    addRecentQuery(q);
   } catch(e) {
     const el = gid('msg-' + lid);
     if (el) el.innerHTML = `<div class="msg-content"><div class="error-box"><div class="err-title">查询失败</div>${esc(e.message)}</div></div>`;
