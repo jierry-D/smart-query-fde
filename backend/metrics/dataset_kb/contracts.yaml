@@ -1,0 +1,21 @@
+# 合同管理表 数据集知识库
+
+table: contracts
+display_name: "合同管理表"
+description: "合同签约与执行状态管理"
+data_type: "明细表"
+
+synonyms:
+  合同: "contracts"
+  签约: "contracts"
+
+field_mapping:
+  合同金额: "contract_amount"
+  签约日期: "signed_date"
+  状态: "status"
+  客户: "customer_name"
+
+business_logic:
+  有效合同:
+    condition: "status IN ('已签约', '执行中', '已完工')"
+    description: "正常履行的合同"

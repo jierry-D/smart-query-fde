@@ -1,0 +1,30 @@
+# 中标管理表 数据集知识库
+
+table: bid_management
+display_name: "中标管理表"
+description: "包含所有中标项目信息，记录合同金额、区域、业务线等维度"
+data_type: "明细表"
+
+synonyms:
+  中标: "bid_management"
+  投标: "bid_management"
+  项目: "project_name"
+
+field_mapping:
+  项目名称: "project_name"
+  合同金额: "contract_amount"
+  中标日期: "bid_date"
+  业务线: "business_line"
+  区域: "region"
+  是否中标: "is_won"
+  投标方式: "bid_method"
+  客户名称: "customer_name"
+
+business_logic:
+  中标:
+    condition: "is_won = 1"
+    description: "已中标的项目"
+
+default_aggregations:
+  contract_amount: "SUM"
+  is_won: "SUM"

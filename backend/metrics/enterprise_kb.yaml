@@ -1,0 +1,91 @@
+# 企业级知识库 — 跨数据集通用的术语和规则
+
+# 同义词映射 (用户用语 → 标准术语)
+synonyms:
+  中标额: "年度累计中标总额"
+  中标金额: "年度累计中标总额"
+  签约额: "年度累计签约总额"
+  签约金额: "年度累计签约总额"
+  在跟商机: "正常跟进商机数量"
+  有效商机: "正常跟进商机数量"
+  大额逾期: "逾期90天以上应收款金额"
+  长期停滞: "长期停滞商机数量"
+  客户数: "存量客户总数"
+  转化率: "商机签约转化率"
+  应收余额: "应收账款总余额"
+  应收款: "应收账款总余额"
+  各地市: "各地市中标额"
+  按区域: "各地市中标额"
+
+# 业务逻辑 (术语 → 数据解释)
+business_logic:
+  大额订单:
+    condition: "contract_amount > 10000"
+    description: "合同金额超过1亿元的订单"
+  停滞预警:
+    condition: "follow_days_gap > 30 OR status = '停滞预警'"
+    description: "超过30天无跟进记录或状态为停滞预警的商机"
+  严重逾期:
+    condition: "overdue_days > 90"
+    description: "逾期超过90天的应收账款"
+
+# 字段映射 (展示名 → 数据库字段)
+field_mapping:
+  金额: "contract_amount"
+  中标日期: "bid_date"
+  签约日期: "signed_date"
+  区域: "region"
+  业务线: "business_line"
+  部门: "department"
+  客户: "customer_name"
+  状态: "status"
+
+# 时间智能 (全局生效)
+time_intelligence:
+  ytd:
+    description: "年初至当前日期的累计值"
+    keywords: ["今年", "年初至今", "YTD", "本年度", "当年度"]
+  mtd:
+    description: "月初至当前日期的累计值"
+    keywords: ["本月", "MTD", "本月份"]
+  yoy:
+    description: "与去年同期相比的增长率"
+    keywords: ["同比", "YoY", "较去年", "与去年"]
+  mom:
+    description: "与上月相比的增长率"
+    keywords: ["环比", "MoM", "较上月", "与上月"]
+  target_completion:
+    description: "实际值/目标值×100%"
+    keywords: ["目标完成率", "达成率", "完成情况"]
+
+# 业务域
+domains:
+  - name: "集团经营总览"
+    tables: ["bid_management", "contracts"]
+    owner: "市场部"
+    visible_to: ["admin", "leader", "employee"]
+
+  - name: "客户全景管理"
+    tables: ["contracts"]
+    owner: "销售部"
+    visible_to: ["admin", "leader", "employee"]
+
+  - name: "商机全生命周期管理"
+    tables: ["opportunities"]
+    owner: "销售部"
+    visible_to: ["admin", "leader"]
+
+  - name: "营收与应收账款管理"
+    tables: ["accounts_receivable"]
+    owner: "财务部"
+    visible_to: ["admin", "leader"]
+
+  - name: "区域与渠道管理"
+    tables: ["bid_management"]
+    owner: "市场部"
+    visible_to: ["admin", "leader", "employee"]
+
+  - name: "风险预警管理"
+    tables: ["opportunities", "accounts_receivable"]
+    owner: "管理层"
+    visible_to: ["admin", "leader"]

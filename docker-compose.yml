@@ -1,0 +1,33 @@
+version: "3.8"
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - SQ_LOG_LEVEL=INFO
+    volumes:
+      - ./backend/db:/app/backend/db
+      - ./backend/logs:/app/backend/logs
+      - ./config.yaml:/app/config.yaml
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # 可选: ChromaDB 向量服务
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/db/chroma:/chroma/chroma
+    restart: unless-stopped
+    profiles:
+      - full

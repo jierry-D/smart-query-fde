@@ -1,0 +1,64 @@
+# 智慧问数系统 v2.0 — 配置文件
+
+# 数据库
+database:
+  path: backend/db/smart_query.db
+  type: sqlite  # sqlite | postgresql
+
+# Web 服务
+web:
+  host: 127.0.0.1
+  port: 5000
+  auto_open_browser: true
+
+# JWT 认证
+jwt:
+  secret_key: "${JWT_SECRET_KEY:-smart-query-dev-secret-key-change-in-production}"
+  algorithm: HS256
+  access_token_expire_minutes: 60
+  refresh_token_expire_days: 7
+
+# 日志
+logging:
+  level: INFO  # DEBUG | INFO | WARNING | ERROR
+  console: true
+  file: backend/logs/app.log
+  max_bytes: 10485760
+  backup_count: 7
+
+# 指标
+metrics:
+  yaml_path: backend/metrics/metric_dict.yaml
+  enterprise_kb_path: backend/metrics/enterprise_kb.yaml
+
+# LLM
+llm:
+  provider: deepseek  # deepseek | openai
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY:-}"
+    base_url: https://api.deepseek.com
+    default_model: deepseek-chat
+    coder_model: deepseek-coder
+  timeout_seconds: 30
+  max_retries: 2
+
+# 向量存储
+vector_store:
+  type: chromadb  # chromadb | none
+  persist_dir: backend/db/chroma
+
+# 查询治理
+governance:
+  max_scan_rows: 500000       # 超过拒绝
+  warn_scan_rows: 100000      # 超过告警
+  query_timeout_seconds: 30   # 超时kill
+  cache_ttl_seconds: 300      # 缓存5分钟
+  max_result_rows: 10000      # 最大返回行数
+  circuit_breaker_failures: 5 # 连续失败N次熔断
+  circuit_breaker_timeout: 30 # 熔断恢复时间(秒)
+
+# 数据接入
+onboarding:
+  auto_scan_enabled: false
+  scan_interval_hours: 24
+  quality_threshold: 60       # 字段质量评分低于此值告警
