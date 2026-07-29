@@ -491,7 +491,8 @@ class NL2SQLPipeline:
                 "entity_tags": tags,
             }
 
-        # Table result
+        # Table result + drill-down suggestions
+        drill = _suggest_drilldown(metric.get("name", ""), rows)
         return {
             "type": "table",
             "metric_name": metric.get("name", ""),
@@ -506,6 +507,7 @@ class NL2SQLPipeline:
             "snapshot_label": ctx.period_label or "",
             "data_scope": scope,
             "entity_tags": tags,
+            "drill_down": drill,
         }
 
     # ── Helpers ──
@@ -565,6 +567,24 @@ def _auto_mom(db, metric: dict, current_value, snapshot_ids: list = None) -> dic
     except Exception:
         pass
     return None
+
+def _suggest_drilldown(metric_name: str, rows: list) -> list[dict] | None:
+    """为表格结果建议下钻维度"""
+    if not rows or len(rows) < 2:
+        return None
+    suggestions = []
+    name = metric_name
+    # 区域分布 → 建议下钻到业务线
+    if "区域" in name or "地市" in name or "城市" in name:
+        suggestions.append({"label": "按业务线查看", "query": name.replace("区域", "业务线").replace("地市", "业务线").replace("城市", "业务线")})
+    # 业务线分布 → 建议下钻到具体区域
+    if "业务线" in name or "板块" in name:
+        suggestions.append({"label": "按区域查看", "query": name.replace("业务线", "区域").replace("板块", "区域")})
+    # 任何分组 → 可加上时间维度
+    if any(kw in name for kw in ("分布", "占比", "排名", "各地市", "各业务")):
+        suggestions.append({"label": "查看趋势变化", "query": f"每月 {name}"})
+    return suggestions if suggestions else None
+
 
 def _build_union(base_sql: str, snapshot_ids: list, fmt: str) -> str:
         from .sql_filter import inject_snapshot_where

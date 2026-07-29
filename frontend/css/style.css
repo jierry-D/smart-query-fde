@@ -265,6 +265,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
   .version-tag{display:none}
 }
 
+/* ═══ Drill Down ═══ */
+.drill-box{margin-top:8px;padding:8px 12px;background:#f0fdf4;border-radius:8px;font-size:.78rem;color:var(--c-text-secondary)}
+
 /* ═══ Scrollbar ═══ */
 ::-webkit-scrollbar{width:5px}
 ::-webkit-scrollbar-track{background:transparent}

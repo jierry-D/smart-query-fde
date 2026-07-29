@@ -240,6 +240,15 @@ function renderTable(d) {
     // Explanation for table
     if (d.explanation) h += `<div class="metric-explain">📖 ${esc(d.explanation)}</div>`;
 
+    // Drill-down suggestions
+    if (d.drill_down && d.drill_down.length) {
+      h += '<div class="drill-box">🔍 下钻分析: ';
+      d.drill_down.forEach(dd => {
+        h += `<button class="clarify-opt" style="margin:2px 4px" onclick="quickQuery('${esc(dd.query)}')">${esc(dd.label)}</button>`;
+      });
+      h += '</div>';
+    }
+
     // CSV export button
     if (d._query) {
       h += `<div style="margin-top:8px">
