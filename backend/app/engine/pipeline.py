@@ -347,16 +347,33 @@ class NL2SQLPipeline:
             search_queries.append(ctx.query)
 
         # 多轮搜索, 合并结果取最优 (不早停)
+        # priority_index: 记录最早匹配的搜索轮次, 用于同分tiebreaker
         all_results = {}
-        for sq in search_queries:
+        for qi, sq in enumerate(search_queries):
             round_results = loader.search(sq, top_k=5)
             for rr in round_results:
                 mid = rr["metric"]["metric_id"]
-                # 保留每个指标的最高分
-                if mid not in all_results or rr["score"] > all_results[mid]["score"]:
+                if mid not in all_results:
                     all_results[mid] = rr
-        # 按分数降序
-        results = sorted(all_results.values(), key=lambda x: x["score"], reverse=True)[:5]
+                    all_results[mid]["_priority"] = qi  # 越小越优先
+                elif rr["score"] > all_results[mid]["score"]:
+                    all_results[mid] = rr
+                    all_results[mid]["_priority"] = qi
+                elif rr["score"] == all_results[mid]["score"] and qi < all_results[mid].get("_priority", 999):
+                    # 同分时优先更早搜索轮次的结果 (cleaned_query > KB synonym)
+                    all_results[mid] = rr
+                    all_results[mid]["_priority"] = qi
+        # 按分数降序, 同分按优先级升序
+        # 有 group_by 时: 表格型指标加权 (NER 已识别分组意图)
+        has_group = ctx.entities.get("group_by")
+        def sort_key(x):
+            score = x["score"]
+            # NER有分组意图时: 表格型指标 boost 0.05
+            if has_group and x["metric"].get("result_format") == "table":
+                score += 0.05
+            prio = x.get("_priority", 999)
+            return (score, -prio)
+        results = sorted(all_results.values(), key=sort_key, reverse=True)[:5]
 
         if not results:
             ctx.add_stage("指标匹配", "error", (time.perf_counter() - t3) * 1000, "未找到")
