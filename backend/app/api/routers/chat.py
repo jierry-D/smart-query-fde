@@ -14,6 +14,18 @@ from ...schemas import ChatRequest
 
 router = APIRouter(prefix="/api", tags=["对话"])
 
+# ── 查询历史 ──
+
+@router.get("/history")
+def get_history(limit: int = 20, user: dict = Depends(get_current_user)):
+    """获取当前用户的查询历史"""
+    db = _get_db()
+    logs = db.get_query_history(user["user_id"], limit)
+    return {
+        "logs": [dict(r) for r in logs],
+        "total": len(logs),
+    }
+
 # ── 仪表盘 ──
 
 @router.get("/dashboard")

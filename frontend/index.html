@@ -98,10 +98,12 @@
           </div>
         </div>
         <div class="chat-input-bar">
-          <input type="text" id="queryInput" placeholder="输入自然语言查询，如：Q3 年度累计中标总额、南宁市 数字政务 中标额..."
+          <button onclick="toggleHistory()" class="btn-text" style="font-size:1.1rem" title="查询历史">🕐</button>
+          <input type="text" id="queryInput" placeholder="输入自然语言查询..."
                  autocomplete="off" onkeydown="if(event.key==='Enter')doQuery()">
           <button onclick="doQuery()" class="btn-send">查询</button>
         </div>
+        <div id="historyPanel" class="history-panel"></div>
       </div>
 
       <!-- Metrics View -->

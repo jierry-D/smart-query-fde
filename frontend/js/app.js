@@ -180,7 +180,7 @@ async function loadDashboard() {
 }
 
 function newChat() {
-  switchView('chatView'); setActiveNav('navChat');
+  switchView('chatView'); setActiveNav('navChat'); loadHistoryPanel();
   // 显示欢迎信息和最近查询
   const msgs = gid('chatMessages');
   const recent = getRecentQueries();
@@ -847,6 +847,37 @@ async function applySuggestion(sid) {
 async function dismissSuggestion(sid) {
   await api(`/api/admin/suggestions/${sid}/dismiss`, { method: 'POST' });
   adminTab('suggestions');
+}
+
+// ── History ──
+async function loadHistoryPanel() {
+  const panel = gid('historyPanel');
+  if (!panel) return;
+  try {
+    const d = await api('/api/history?limit=15');
+    if (!d.logs || !d.logs.length) {
+      panel.innerHTML = '<div style="padding:12px;font-size:.78rem;color:var(--c-text-secondary)">暂无查询记录</div>';
+      return;
+    }
+    let h = '';
+    d.logs.forEach(l => {
+      const statusIcon = l.status === 'success' ? '✅' : '❌';
+      h += `<div class="history-item" onclick="quickQuery('${esc(l.original_query||'')}')" title="${esc(l.original_query||'')}">
+        <span>${statusIcon}</span>
+        <span class="history-query">${esc((l.original_query||'').slice(0,30))}</span>
+        <span class="history-time">${(l.created_at||'').slice(5,16)}</span>
+      </div>`;
+    });
+    panel.innerHTML = h;
+  } catch(e) {
+    // silent
+  }
+}
+
+function toggleHistory() {
+  const panel = gid('historyPanel');
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) loadHistoryPanel();
 }
 
 // ── Export ──
