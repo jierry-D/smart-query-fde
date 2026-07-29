@@ -70,6 +70,10 @@ class Config:
     # ── 数据库 ──
 
     @property
+    def cors_origins(self) -> list[str]:
+        return self._get("cors", "origins", default=["*"])
+
+    @property
     def db_path(self) -> str:
         return _resolve_path(self._get("database", "path", default="backend/db/smart_query.db"))
 
@@ -97,7 +101,12 @@ class Config:
 
     @property
     def jwt_secret_key(self) -> str:
-        return self._get("jwt", "secret_key", default="dev-secret")
+        key = self._get("jwt", "secret_key", default="smart-query-dev-secret-change-in-production")
+        if "change-in-production" in key:
+            import os
+            if os.environ.get("SQ_ENV", "dev") != "dev":
+                raise ValueError("JWT_SECRET_KEY 未设置! 生产环境通过环境变量 JWT_SECRET_KEY 设置")
+        return key
 
     @property
     def jwt_algorithm(self) -> str:

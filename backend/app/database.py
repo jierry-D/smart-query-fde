@@ -1,7 +1,6 @@
 """数据库连接管理 — SQLite (dev) / PostgreSQL (prod)"""
 
 import sqlite3
-import re
 from pathlib import Path
 from contextlib import contextmanager
 

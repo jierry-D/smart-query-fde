@@ -74,8 +74,8 @@ class NEREngine:
                         val = r['region']
                         if val:
                             self._register_value(val, self.regions)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("维度加载跳过: %s", e)
 
             for table in ['bid_management', 'contracts', 'opportunities']:
                 try:
@@ -86,8 +86,8 @@ class NEREngine:
                         val = r['business_line']
                         if val:
                             self._register_value(val, self.business_lines)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("维度加载跳过: %s", e)
 
             logger.info("NER 词典: %d 区域, %d 业务线", len(self.regions), len(self.business_lines))
         except Exception as e:

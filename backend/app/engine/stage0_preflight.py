@@ -44,7 +44,7 @@ class Stage0Preflight:
                         f"数据最后更新: {days_ago} 天前 ({latest['data_period']})"
                     )
             except Exception:
-                pass
+                pass  # 日期解析失败不影响
         else:
             status = "error"
             messages.append("暂无数据，请先导入数据")

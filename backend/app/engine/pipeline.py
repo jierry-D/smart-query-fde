@@ -53,7 +53,6 @@ class NL2SQLPipeline:
     def __init__(self, db, llm_provider=None):
         self.db = db
         self.llm = llm_provider
-        self._kb_resolver = None  # lazy init
 
     def run(self, query: str, user: dict) -> dict:
         """执行完整流水线，返回响应字典"""
@@ -67,10 +66,12 @@ class NL2SQLPipeline:
         self._stage1_ner(ctx)
 
         # Stage 1.2: 知识库增强 (同义词扩展 + 业务逻辑)
-        self._stage_kb_enhance(ctx)
+        from .stage_kb import enhance_with_kb
+        enhance_with_kb(ctx)
 
         # Stage 1.5: 反问澄清检测
-        clarification = self._check_clarification(ctx)
+        from .stage_clarify import check_clarification
+        clarification = check_clarification(ctx)
         if clarification:
             clarification["elapsed_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
             clarification["process"] = ctx.stages
@@ -116,18 +117,6 @@ class NL2SQLPipeline:
             response["preflight"] = ctx.preflight
         return response
 
-    def _get_kb(self):
-        """懒加载知识库解析器"""
-        if self._kb_resolver is None:
-            from pathlib import Path
-            from ..semantic.kb_resolver import KBResolver
-            kb_dir = Path(__file__).parent.parent.parent / "metrics"
-            self._kb_resolver = KBResolver(
-                enterprise_kb_path=str(kb_dir / "enterprise_kb.yaml"),
-                dataset_kb_dir=str(kb_dir / "dataset_kb"),
-            )
-        return self._kb_resolver
-
     # ── Stage 0: Preflight ──
 
     def _stage0_preflight(self, ctx: PipelineContext):
@@ -150,161 +139,6 @@ class NL2SQLPipeline:
         ctx.add_stage("NER实体提取", "done", (time.perf_counter() - t1) * 1000,
                       f"意图={ctx.entities.get('intent', '?')}, 筛选={len(ctx.entities.get('filters', []))}条")
 
-    # ── KB Enhance ──
-
-    def _stage_kb_enhance(self, ctx: PipelineContext):
-        """知识库增强: 同义词扩展 + 业务逻辑注入"""
-        t_kb = time.perf_counter()
-        try:
-            kb = self._get_kb()
-            hint = ctx.entities.get("metric_hint", ctx.query)
-
-            # 1. 同义词扩展: 将用户用语映射到标准指标名
-            kb_synonyms = []
-            words = hint.replace('的', ' ').split()
-            for w in words:
-                if len(w) >= 2:
-                    resolved = kb.resolve_synonym(w)
-                    if resolved and resolved != w:
-                        kb_synonyms.append(resolved)
-
-            if kb_synonyms:
-                # 存储扩展后的搜索词供 Stage 3 使用
-                ctx.kb_synonyms = kb_synonyms
-                logger.debug("KB同义词: %s → %s", hint, kb_synonyms)
-
-            # 2. 业务逻辑注入: 检测业务术语并添加筛选条件
-            for w in words:
-                if len(w) >= 2:
-                    logic = kb.resolve_business_logic(w)
-                    if logic and isinstance(logic, dict):
-                        cond = logic.get("condition", "")
-                        if cond:
-                            ctx.entities.setdefault("kb_conditions", []).append({
-                                "term": w,
-                                "condition": cond,
-                                "description": logic.get("description", ""),
-                            })
-
-            elapsed = (time.perf_counter() - t_kb) * 1000
-            detail_parts = []
-            if kb_synonyms:
-                detail_parts.append(f"同义词: {len(kb_synonyms)}")
-            if ctx.entities.get("kb_conditions"):
-                detail_parts.append(f"业务逻辑: {len(ctx.entities['kb_conditions'])}")
-            if detail_parts:
-                ctx.add_stage("知识库增强", "done", elapsed, ", ".join(detail_parts))
-
-        except Exception as e:
-            logger.debug("KB增强跳过: %s", e)
-
-    # ── Clarification ──
-
-    def _check_clarification(self, ctx: PipelineContext) -> dict | None:
-        """检测是否需要反问澄清。需要则返回 clarify 响应，否则返回 None"""
-        t1 = time.perf_counter()
-        entities = ctx.entities
-        completeness = entities.get("completeness", {})
-        kb_synonyms = getattr(ctx, 'kb_synonyms', [])
-
-        # 构建 entity_tags (从 NER filters 转换)
-        tags = []
-        for f in entities.get("filters", []):
-            tags.append({"type": "filter", "label": f"{f['field']}={f['value']}"})
-        if entities.get("group_by"):
-            tags.append({"type": "group", "label": f"按{entities['group_by']}"})
-
-        # 检测时间词 (在 Stage 2 时间解析之前)
-        TIME_KEYWORDS = [
-            "Q1", "Q2", "Q3", "Q4", "月", "季度", "年", "本周", "本月", "本期",
-            "今年", "去年", "同比", "环比", "上半年", "下半年", "上个", "上个月",
-            "上季度", "本季度", "近", "最近",
-        ]
-        has_time_keyword = any(kw in ctx.query for kw in TIME_KEYWORDS)
-        # 更新 completeness
-        if has_time_keyword:
-            completeness["has_time"] = True
-            completeness["score"] = min(1.0, completeness.get("score", 0) + 0.3)
-
-        query_len = len(ctx.query.strip())
-
-        # 场景1: 查询太短，无法判断意图 (KB已解析则跳过)
-        if query_len < 3 and not kb_synonyms:
-            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
-                          "查询太短, 需要更多信息")
-            return {
-                "type": "clarify",
-                "question": "请问您想查什么数据？",
-                "options": [
-                    {"label": "查看所有指标", "action": "command", "value": "/list"},
-                    {"label": "查看数据状态", "action": "command", "value": "/db"},
-                    {"label": "查看帮助", "action": "command", "value": "/help"},
-                ],
-                "hint": "您也可以直接输入自然语言查询，如'Q3 年度累计中标总额'",
-                "completeness": completeness,
-                "entity_tags": tags,
-            }
-
-        # 场景2: 缺少时间范围
-        has_time = completeness.get("has_time", False)
-        has_dimension = completeness.get("has_dimension", False)
-        score = completeness.get("score", 0.5)
-        intent = entities.get("intent", "aggregate")
-
-        # KB同义词成功解析 → 查询意图明确, 跳过澄清
-        kb_synonyms = getattr(ctx, 'kb_synonyms', [])
-        if kb_synonyms:
-            ctx.add_stage("反问澄清", "done", 0, f"KB同义词={len(kb_synonyms)}, 默认最新数据")
-            return None
-
-        # 有明确意图的查询(分布/排名)不需要时间澄清, 默认最新数据即可
-        if intent in ("distribution", "ranking", "trend"):
-            ctx.add_stage("反问澄清", "done", 0, f"意图={intent}, 默认最新数据")
-            return None
-
-        if not has_time and not has_dimension and query_len < 4:
-            # 查询太短: 既没时间也没维度 (≤3字符才反问)
-            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
-                          "缺少时间和筛选条件, 提供时间选项")
-            return {
-                "type": "clarify",
-                "question": "请补充查询条件，以便精准查询：",
-                "options": [
-                    {"label": "📅 本月", "action": "refine", "value": f"本月 {ctx.query}"},
-                    {"label": "📅 本季度", "action": "refine", "value": f"本季度 {ctx.query}"},
-                    {"label": "📅 今年", "action": "refine", "value": f"今年 {ctx.query}"},
-                    {"label": "⏭️ 跳过, 用最新数据", "action": "refine", "value": ctx.query},
-                ],
-                "hint": "添加时间范围可以获得更精确的结果",
-                "completeness": completeness,
-                "entity_tags": tags,
-            }
-
-        if not has_time and has_dimension:
-            # 有维度筛选但缺时间
-            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
-                          "已识别筛选条件但缺少时间范围")
-            return {
-                "type": "clarify",
-                "question": "已识别您的筛选条件，请补充时间范围：",
-                "options": [
-                    {"label": "📅 本月", "action": "refine", "value": f"本月 {ctx.query}"},
-                    {"label": "📅 本季度", "action": "refine", "value": f"本季度 {ctx.query}"},
-                    {"label": "📅 今年 (YTD)", "action": "refine", "value": f"今年 {ctx.query}"},
-                    {"label": "⏭️ 跳过, 用最新数据", "action": "refine", "value": ctx.query},
-                ],
-                "hint": "添加时间后可以获得对应期间的数据",
-                "completeness": completeness,
-                "entity_tags": tags,
-            }
-
-        # 场景3: 无时间词但查询较长(有足够上下文) → 不反问, 默认最新数据
-        if not has_time and score >= 0.4:
-            ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
-                          "未指定时间, 默认使用最新数据")
-            return None  # 不反问, 继续流水线
-
-        return None  # 信息完整, 继续流水线
 
     # ── Stage 2: Time ──
 

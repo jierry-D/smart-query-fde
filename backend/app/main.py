@@ -27,10 +27,11 @@ def create_app() -> FastAPI:
         version="2.0.0",
     )
 
-    # CORS
+    # CORS (从配置读取)
+    cors_origins = getattr(config, 'cors_origins', ["*"])
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

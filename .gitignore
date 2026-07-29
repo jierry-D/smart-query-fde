@@ -45,3 +45,5 @@ dist/
 .pytest_cache/
 htmlcov/
 .coverage
+logs/
+backend/logs/

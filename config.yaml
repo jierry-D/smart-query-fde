@@ -1,5 +1,10 @@
 # 智慧问数系统 v2.0 — 配置文件
 
+# CORS 允许的域名 (生产环境必须修改)
+cors:
+  origins:
+    - "*"  # 开发环境允许所有来源
+
 # 数据库
 database:
   path: backend/db/smart_query.db
