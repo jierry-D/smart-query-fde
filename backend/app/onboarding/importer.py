@@ -71,7 +71,7 @@ def import_excel(filepath: str, db, user: dict) -> dict:
         count = _import_data(db, table_name, headers, data_rows, col_types)
 
         # 注册快照
-        snapshot_id = db.execute_write(
+        snapshot_id = db.insert_and_get_id(
             "INSERT INTO data_snapshots (table_name, data_period, ingestion_time, description, total_rows, uploaded_by) "
             "VALUES (?, ?, datetime('now'), ?, ?, ?)",
             (table_name, data_period, f"{sheet_name} - {data_period}", count, user["user_id"]),
@@ -139,6 +139,16 @@ def _infer_column_types(headers: list, data_rows: list) -> dict:
             types[h] = "TEXT"
             continue
 
+        # 尝试将字符串转为数字
+        def try_num(v):
+            if isinstance(v, (int, float)): return v
+            if isinstance(v, str):
+                try: return int(v)
+                except: pass
+                try: return float(v)
+                except: pass
+            return v
+
         # 检测日期
         date_count = sum(1 for v in samples if isinstance(v, (date,)) or
                          (isinstance(v, str) and re.match(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', str(v))))
@@ -146,10 +156,11 @@ def _infer_column_types(headers: list, data_rows: list) -> dict:
             types[h] = "DATE"
             continue
 
-        # 检测数字
-        num_count = sum(1 for v in samples if isinstance(v, (int, float)))
+        # 检测数字 (含字符串数字)
+        nums = [try_num(v) for v in samples]
+        num_count = sum(1 for v in nums if isinstance(v, (int, float)))
         if num_count == len(samples):
-            if all(isinstance(v, int) or (isinstance(v, float) and v == int(v)) for v in samples):
+            if all(isinstance(v, int) for v in nums):
                 types[h] = "INTEGER"
             else:
                 types[h] = "REAL"
@@ -232,61 +243,39 @@ def _import_data(db, table_name: str, headers: list, data_rows: list, col_types:
 
 
 def _auto_generate_metrics(db, table_name: str, headers: list, col_types: dict) -> int:
-    """自动生成指标: 每个数值列生成合计/平均, 每个文本列生成分布"""
+    """自动生成指标: 每个数值列生成合计/平均"""
     count = 0
     safe_headers = [re.sub(r'[^\w一-鿿]', '_', str(h)) for h in headers]
 
     for i, h in enumerate(headers):
         safe_h = safe_headers[i]
         if col_types[h] in ("REAL", "INTEGER"):
-            # 合计
+            # 合计 (表名前缀确保唯一)
+            metric_name = f"{table_name}_{h}合计"
             sql_sum = f'SELECT ROUND(SUM("{safe_h}"), 2) AS value FROM "{table_name}"'
-            metric_id = f"gen_{table_name}_sum_{safe_h}"
             try:
                 db.execute_write(
-                    "INSERT OR REPLACE INTO metric_registry (metric_id, name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (metric_id, f"{h}合计", "自动生成", "available", "L1",
+                    "INSERT INTO metric_registry (name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (metric_name, "自动生成", "available", "L1",
                      table_name, sql_sum, "number", ""),
                 )
                 count += 1
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("指标生成(合计)失败: %s", e)
 
             # 平均
+            metric_name = f"{table_name}_{h}平均"
             sql_avg = f'SELECT ROUND(AVG("{safe_h}"), 2) AS value FROM "{table_name}"'
-            metric_id = f"gen_{table_name}_avg_{safe_h}"
             try:
                 db.execute_write(
-                    "INSERT OR REPLACE INTO metric_registry (metric_id, name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (metric_id, f"{h}平均", "自动生成", "available", "L1",
+                    "INSERT INTO metric_registry (name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (metric_name, "自动生成", "available", "L1",
                      table_name, sql_avg, "number", ""),
                 )
                 count += 1
-            except Exception:
-                pass
-
-        elif col_types[h] == "TEXT" and count < 10:
-            # 找一个数值列搭配做分布
-            for j, h2 in enumerate(headers):
-                if col_types[h2] in ("REAL", "INTEGER"):
-                    safe_h2 = safe_headers[j]
-                    sql_dist = (
-                        f'SELECT "{safe_h}" AS label, ROUND(SUM("{safe_h2}"), 2) AS value '
-                        f'FROM "{table_name}" GROUP BY "{safe_h}" ORDER BY value DESC'
-                    )
-                    metric_id = f"gen_{table_name}_dist_{safe_h}"
-                    try:
-                        db.execute_write(
-                            "INSERT OR REPLACE INTO metric_registry (metric_id, name, category, status, complexity, table_name, sql_template, result_format, result_unit) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                            (metric_id, f"{h}分布", "自动生成", "available", "L2",
-                             table_name, sql_dist, "table", ""),
-                        )
-                        count += 1
-                    except Exception:
-                        pass
-                    break
+            except Exception as e:
+                logger.warning("指标生成(平均)失败: %s", e)
 
     return count

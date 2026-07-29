@@ -56,6 +56,13 @@ class DatabaseConnector:
             cur.execute(sql, params)
             return cur.rowcount
 
+    def insert_and_get_id(self, sql: str, params: tuple = ()) -> int:
+        """执行 INSERT 并返回自增ID"""
+        with self.connect() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            return cur.lastrowid
+
     def table_exists(self, table_name: str) -> bool:
         with self.connect() as conn:
             cur = conn.cursor()

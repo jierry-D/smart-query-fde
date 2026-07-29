@@ -90,6 +90,7 @@ def create_tables(conn):
         ingestion_time  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
         description     TEXT,
         total_rows      INTEGER DEFAULT 0,
+        uploaded_by     INTEGER,
         UNIQUE(table_name, data_period)
     );
 
