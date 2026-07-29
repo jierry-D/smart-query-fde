@@ -101,8 +101,17 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .stat-number{font-size:2.4rem;font-weight:800;color:var(--c-primary);line-height:1.2}
 .stat-number.warning{color:var(--c-warning)}
 .stat-number.danger{color:var(--c-danger)}
+.stat-number.info-alert{color:var(--c-info)}
+.stat-number.tip-alert{color:#6b7280}
 .stat-unit{font-size:1rem;font-weight:400;color:var(--c-text-secondary);margin-left:4px}
 .stat-sql{font-size:.72rem;color:var(--c-text-secondary);margin-top:4px;font-family:"JetBrains Mono",monospace}
+
+/* Alert Badges */
+.alert-badge{font-size:.65rem;padding:2px 8px;border-radius:10px;font-weight:600;white-space:nowrap}
+.alert-badge.alert-紧急{background:#fef2f2;color:#dc2626;border:1px solid #fecaca}
+.alert-badge.alert-重要{background:#fffbeb;color:#d97706;border:1px solid #fde68a}
+.alert-badge.alert-一般{background:#eff6ff;color:#0284c7;border:1px solid #bfdbfe}
+.alert-badge.alert-提示{background:#f8fafc;color:#6b7280;border:1px solid #e2e8f0}
 
 /* Entity Tags */
 .ent-tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:8px}
@@ -111,11 +120,24 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .ent-tag.group{background:#dcfce7;color:#166534}
 .ent-tag.limit{background:#fef3c7;color:#92400e}
 
-/* Process */
-.stage-list{font-size:.72rem;color:var(--c-text-secondary);margin-top:8px;display:flex;gap:12px;flex-wrap:wrap}
-.stage-item{display:flex;align-items:center;gap:4px}
-.stage-ok{color:var(--c-success)}
-.stage-err{color:var(--c-danger)}
+/* Process Stages */
+.process-details{margin-top:8px}
+.process-details summary{user-select:none}
+.stage-list{font-size:.72rem;color:var(--c-text-secondary);margin-top:8px;display:flex;flex-direction:column;gap:2px}
+.stage-item{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px}
+.stage-item:hover{background:#f8fafc}
+.stage-icon{font-size:.7rem;width:14px;text-align:center}
+.stage-name{font-weight:500;color:var(--c-text);min-width:60px}
+.stage-detail{color:var(--c-text-secondary);flex:1;font-size:.68rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stage-time{color:var(--c-text-secondary);font-size:.68rem;min-width:45px;text-align:right}
+.stage-ok .stage-icon{color:var(--c-success)}
+.stage-err .stage-icon,.stage-err .stage-name{color:var(--c-danger)}
+
+/* Preflight Box */
+.preflight-box{padding:10px 14px;border-radius:8px;margin-top:8px;font-size:.8rem}
+.preflight-ok{background:#f0fdf4;border-left:4px solid var(--c-success);color:#166534}
+.preflight-warn{background:#fffbeb;border-left:4px solid var(--c-warning);color:#92400e}
+.preflight-err{background:#fef2f2;border-left:4px solid var(--c-danger);color:#991b1b}
 
 /* Data Table */
 .data-table{width:100%;border-collapse:collapse;font-size:.85rem;margin-top:8px}

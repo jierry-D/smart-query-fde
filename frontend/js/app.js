@@ -133,14 +133,26 @@ function renderResponse(d) {
     default: html += `<pre style="font-size:.75rem">${esc(JSON.stringify(d,null,2))}</pre>`;
   }
 
-  // Process stages
+  // Preflight warnings (Stage 0)
+  if (d.preflight && d.preflight.messages && d.preflight.messages.length) {
+    const pStatus = d.preflight.status;
+    const pIcon = pStatus === 'error' ? '❌' : pStatus === 'warning' ? '⚠️' : 'ℹ️';
+    const pClass = pStatus === 'error' ? 'preflight-err' : pStatus === 'warning' ? 'preflight-warn' : 'preflight-ok';
+    html += `<div class="preflight-box ${pClass}"><strong>${pIcon} 数据预检</strong><ul style="margin:4px 0 0 16px;font-size:.78rem">`;
+    d.preflight.messages.forEach(m => html += `<li>${esc(m)}</li>`);
+    html += '</ul></div>';
+  }
+
+  // Process stages with improved transparency
   if (d.process && d.process.length) {
-    html += `<div class="stage-list">`;
+    html += `<details class="process-details"><summary style="font-size:.75rem;cursor:pointer;color:var(--c-text-secondary)">
+      🔍 查询过程 (${d.elapsed_ms||'?'}ms 总耗时)</summary><div class="stage-list">`;
     d.process.forEach(s => {
+      const icon = s.status === 'done' ? '✅' : s.status === 'error' ? '❌' : '⏳';
       const cls = s.status === 'done' ? 'stage-ok' : s.status === 'error' ? 'stage-err' : '';
-      html += `<span class="stage-item ${cls}">${s.name} ${s.elapsed_ms}ms</span>`;
+      html += `<div class="stage-item ${cls}"><span class="stage-icon">${icon}</span><span class="stage-name">${s.name}</span><span class="stage-detail">${esc(s.detail||'')}</span><span class="stage-time">${s.elapsed_ms}ms</span></div>`;
     });
-    html += '</div>';
+    html += '</div></details>';
   }
 
   // SQL details
@@ -166,9 +178,19 @@ function renderNumber(d) {
   let cls = 'stat-number';
   if (d.alert_level === '紧急') cls += ' danger';
   else if (d.alert_level === '重要') cls += ' warning';
+  else if (d.alert_level === '一般') cls += ' info-alert';
+  else if (d.alert_level === '提示') cls += ' tip-alert';
 
-  let h = `<div style="font-size:.8rem;color:var(--c-text-secondary);margin-bottom:4px">${esc(d.display_name||d.metric_name)}</div>`;
+  // Alert badge
+  let alertBadge = '';
+  if (d.alert_level) {
+    const alertIcons = { '紧急': '🔴', '重要': '🔶', '一般': '🟡', '提示': '🔵' };
+    alertBadge = `<span class="alert-badge alert-${d.alert_level}">${alertIcons[d.alert_level]||''} ${d.alert_level}</span>`;
+  }
+
+  let h = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:.8rem;color:var(--c-text-secondary)">${esc(d.display_name||d.metric_name)}</span>${alertBadge}</div>`;
   h += `<div class="${cls}">${d.value != null ? d.value.toLocaleString() : '—'}<span class="stat-unit">${esc(d.unit||'')}</span></div>`;
+  // ... rest unchanged
 
   // Entity tags
   if (d.entity_tags && d.entity_tags.length) {
@@ -184,7 +206,12 @@ function renderNumber(d) {
 }
 
 function renderTable(d) {
-  let h = `<div style="font-size:.8rem;color:var(--c-text-secondary);margin-bottom:4px">${esc(d.display_name||d.metric_name)} <span style="margin-left:8px">${d.row_count||0} 行</span></div>`;
+  let alertBadge = '';
+  if (d.alert_level) {
+    const alertIcons = { '紧急': '🔴', '重要': '🔶', '一般': '🟡', '提示': '🔵' };
+    alertBadge = `<span class="alert-badge alert-${d.alert_level}">${alertIcons[d.alert_level]||''} ${d.alert_level}</span>`;
+  }
+  let h = `<div style="display:flex;align-items:center;gap:8px;margin-bottom:4px"><span style="font-size:.8rem;color:var(--c-text-secondary)">${esc(d.display_name||d.metric_name)} <span style="margin-left:8px">${d.row_count||0} 行</span></span>${alertBadge}</div>`;
 
   if (d.entity_tags && d.entity_tags.length) {
     h += '<div class="ent-tags">';

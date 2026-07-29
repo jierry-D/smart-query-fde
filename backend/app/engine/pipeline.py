@@ -39,14 +39,15 @@ class PipelineContext:
 
 class NL2SQLPipeline:
     """
-    完整查询流水线:
-      Stage 1: NER 实体提取
-      Stage 2: 时间解析
-      Stage 3: 指标匹配
-      Stage 4: SQL 生成 (模板/LLM)
-      Stage 5: 治理检查 (五层)
-      Stage 6: SQL 执行
-      Stage 7: 结果构建
+    完整查询流水线 (Stage 0-7):
+      Stage 0: 数据预检 (新鲜度/可用性/时间范围提示)
+      Stage 1: NER 实体提取 (区域/业务线/意图/排序)
+      Stage 2: 时间解析 (自然语言→快照ID)
+      Stage 3: 指标匹配 (精确→包含→模糊)
+      Stage 4: SQL 生成 (模板/LLM) + NER 注入
+      Stage 5: 治理检查 (五层防护: 权限/安全/预估/保护/缓存)
+      Stage 6: SQL 执行 (单快照 WHERE / 多快照 UNION ALL)
+      Stage 7: 结果构建 (数值卡/表格/时间智能)
     """
 
     def __init__(self, db, llm_provider=None):
@@ -57,6 +58,9 @@ class NL2SQLPipeline:
         """执行完整流水线，返回响应字典"""
         t_start = time.perf_counter()
         ctx = PipelineContext(query, user, self.db)
+
+        # Stage 0: 数据预检
+        self._stage0_preflight(ctx)
 
         # Stage 1: NER
         self._stage1_ner(ctx)
@@ -71,7 +75,7 @@ class NL2SQLPipeline:
         # Check metric status
         metric = ctx.matched_metric
         if metric.get("status") == "pending" or not metric.get("sql_template"):
-            return {
+            response = {
                 "type": "pending",
                 "metric_name": metric["name"],
                 "explanation": metric.get("explanation", ""),
@@ -79,6 +83,9 @@ class NL2SQLPipeline:
                 "process": ctx.stages,
                 "entity_tags": ctx.entities.get("entity_tags", []),
             }
+            if hasattr(ctx, 'preflight') and ctx.preflight:
+                response["preflight"] = ctx.preflight
+            return response
 
         # Stage 4: SQL gen
         self._stage4_sql(ctx)
@@ -94,7 +101,21 @@ class NL2SQLPipeline:
         response = self._stage7_response(ctx)
         response["elapsed_ms"] = round((time.perf_counter() - t_start) * 1000, 2)
         response["process"] = ctx.stages
+        if hasattr(ctx, 'preflight') and ctx.preflight:
+            response["preflight"] = ctx.preflight
         return response
+
+    # ── Stage 0: Preflight ──
+
+    def _stage0_preflight(self, ctx: PipelineContext):
+        t0 = time.perf_counter()
+        from .stage0_preflight import Stage0Preflight
+        preflight = Stage0Preflight(ctx.db)
+        result = preflight.check(ctx.query)
+        ctx.preflight = result
+        status = result["status"]
+        detail = "; ".join(result["messages"]) if result["messages"] else "通过"
+        ctx.add_stage("数据预检", status, (time.perf_counter() - t0) * 1000, detail)
 
     # ── Stage 1: NER ──
 
@@ -319,12 +340,16 @@ class NL2SQLPipeline:
 
     def _error_response(self, ctx: PipelineContext, message: str) -> dict:
         suggestions = getattr(ctx, "_suggestions", ["输入 /list 查看所有指标"])
-        return {
+        response = {
             "type": "error",
             "message": message,
             "suggestions": suggestions,
             "process": ctx.stages,
         }
+        # 附带预检信息
+        if hasattr(ctx, 'preflight') and ctx.preflight:
+            response["preflight"] = ctx.preflight
+        return response
 
     @staticmethod
     def _build_union(base_sql: str, snapshot_ids: list, fmt: str) -> str:
