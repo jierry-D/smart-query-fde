@@ -121,9 +121,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 .ent-tag.limit{background:#fef3c7;color:#92400e}
 
 /* Process Stages */
-.process-details{margin-top:8px}
-.process-details summary{user-select:none}
-.stage-list{font-size:.72rem;color:var(--c-text-secondary);margin-top:8px;display:flex;flex-direction:column;gap:2px}
+.process-details{margin-top:10px}
+.process-header{font-size:.72rem;color:var(--c-text-secondary);cursor:pointer;user-select:none;padding:4px 0;border-bottom:1px solid var(--c-border);margin-bottom:4px}
+.process-header:hover{color:var(--c-primary)}
+.stage-list{font-size:.72rem;color:var(--c-text-secondary);display:flex;flex-direction:column;gap:2px}
+.stage-list.collapsed{display:none}
 .stage-item{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:4px}
 .stage-item:hover{background:#f8fafc}
 .stage-icon{font-size:.7rem;width:14px;text-align:center}
@@ -204,6 +206,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Micr
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px}
 ::-webkit-scrollbar-thumb:hover{background:#94a3b8}
+
+/* ═══ Feedback ═══ */
+.feedback-row{display:flex;align-items:center;gap:4px;margin-top:10px;padding-top:8px;border-top:1px solid var(--c-border)}
+.feedback-label{font-size:.72rem;color:var(--c-text-secondary);margin-right:4px}
+.fb-btn{background:none;border:1px solid var(--c-border);border-radius:16px;padding:3px 10px;cursor:pointer;font-size:.85rem;transition:all .15s}
+.fb-btn:hover{background:#eef2ff;border-color:var(--c-primary)}
+.fb-btn.active{background:var(--c-primary);border-color:var(--c-primary);color:#fff;transform:scale(1.1)}
+.fb-thanks{font-size:.72rem;color:var(--c-success);margin-left:4px}
 
 /* ═══ Toast ═══ */
 .toast{position:fixed;top:20px;right:20px;padding:12px 20px;background:var(--c-surface);border-radius:8px;box-shadow:var(--shadow-md);z-index:9999;animation:slideIn .3s;font-size:.85rem}

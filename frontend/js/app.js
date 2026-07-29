@@ -218,16 +218,19 @@ function renderResponse(d) {
     html += '</ul></div>';
   }
 
-  // Process stages with improved transparency
+  // Process stages — always visible for transparency
   if (d.process && d.process.length) {
-    html += `<details class="process-details"><summary style="font-size:.75rem;cursor:pointer;color:var(--c-text-secondary)">
-      🔍 查询过程 (${d.elapsed_ms||'?'}ms 总耗时)</summary><div class="stage-list">`;
+    html += `<div class="process-details">
+      <div class="process-header" onclick="this.nextElementSibling.classList.toggle('collapsed')">
+        🔍 查询过程 · ${d.elapsed_ms||'?'}ms
+      </div>
+      <div class="stage-list">`;
     d.process.forEach(s => {
       const icon = s.status === 'done' ? '✅' : s.status === 'error' ? '❌' : '⏳';
       const cls = s.status === 'done' ? 'stage-ok' : s.status === 'error' ? 'stage-err' : '';
       html += `<div class="stage-item ${cls}"><span class="stage-icon">${icon}</span><span class="stage-name">${s.name}</span><span class="stage-detail">${esc(s.detail||'')}</span><span class="stage-time">${s.elapsed_ms}ms</span></div>`;
     });
-    html += '</div></details>';
+    html += '</div></div>';
   }
 
   // SQL details
@@ -245,8 +248,37 @@ function renderResponse(d) {
     </div>`;
   }
 
+  // Feedback buttons
+  const qid = d._qid || '';
+  html += `<div class="feedback-row" data-qid="${esc(qid)}" data-query="${esc(d._query||'')}">
+    <span class="feedback-label">这个结果有帮助吗？</span>
+    <button class="fb-btn" onclick="sendFeedback(this, 'up')" title="有用">👍</button>
+    <button class="fb-btn" onclick="sendFeedback(this, 'down')" title="没用">👎</button>
+    <span class="fb-thanks" style="display:none">感谢反馈!</span>
+  </div>`;
+
   html += `<div class="msg-meta">${timeNow()} | 🔒 ${esc(d.data_scope||'')}</div></div>`;
   return html;
+}
+
+async function sendFeedback(btn, rating) {
+  const row = btn.closest('.feedback-row');
+  const query = row.dataset.query || '';
+  const thanks = row.querySelector('.fb-thanks');
+
+  // Visual feedback
+  row.querySelectorAll('.fb-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+
+  try {
+    await api('/api/feedback', {
+      method: 'POST',
+      body: JSON.stringify({ rating, comment: '', original_query: query }),
+    });
+    thanks.style.display = 'inline';
+  } catch(e) {
+    // Silent fail - feedback is non-critical
+  }
 }
 
 function renderNumber(d) {

@@ -75,6 +75,8 @@ def _handle_query(query: str, db: DatabaseConnector, user: dict) -> dict:
     except Exception:
         pass  # 日志失败不影响主流程
 
+    # 附带原始查询供前端反馈使用
+    result["_query"] = query
     return result
 
 
