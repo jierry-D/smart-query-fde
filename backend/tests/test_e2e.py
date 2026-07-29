@@ -1,13 +1,28 @@
 #!/usr/bin/env python3
-"""端到端集成测试"""
+"""端到端集成测试 — 自动初始化演示数据库"""
 
 import sys
+import subprocess
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import pytest
 from fastapi.testclient import TestClient
+import pytest
+
+# 确保演示数据库存在
+DB_PATH = Path(__file__).parent.parent / "db" / "smart_query.db"
+INIT_SCRIPT = Path(__file__).parent.parent / "db" / "init_db.py"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def setup_demo_db():
+    """会话级: 初始化演示数据库 (--demo)"""
+    subprocess.run(
+        [sys.executable, str(INIT_SCRIPT), "--demo"],
+        capture_output=True, timeout=30,
+    )
+    yield
 
 
 @pytest.fixture
@@ -178,7 +193,7 @@ def test_admin_users(client, admin_token):
         "Authorization": f"Bearer {admin_token}"
     })
     assert resp.status_code == 200
-    assert resp.json()["total"] == 6
+    assert resp.json()["total"] == 3
 
 
 def test_admin_stats(client, admin_token):
@@ -186,7 +201,7 @@ def test_admin_stats(client, admin_token):
         "Authorization": f"Bearer {admin_token}"
     })
     assert resp.status_code == 200
-    assert resp.json()["users"] == 6
+    assert resp.json()["users"] == 3
 
 
 # ── Status Test ──
@@ -196,4 +211,4 @@ def test_status(client):
     assert resp.status_code == 200
     data = resp.json()
     assert data["version"] == "2.0.0"
-    assert data["users"] == 6
+    assert data["users"] == 3
