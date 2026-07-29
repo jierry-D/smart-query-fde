@@ -144,7 +144,7 @@ def export_csv(req: ChatRequest, user: dict = Depends(get_current_user)):
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f"attachment; filename=query_result.csv"}
     )
 
 
