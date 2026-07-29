@@ -14,6 +14,51 @@ from ...schemas import ChatRequest
 
 router = APIRouter(prefix="/api", tags=["对话"])
 
+# ── CSV 导出 ──
+
+@router.post("/export/csv")
+def export_csv(req: ChatRequest, user: dict = Depends(get_current_user)):
+    """导出查询结果为 CSV"""
+    import io
+    import csv
+    from fastapi.responses import StreamingResponse
+
+    user_input = ' '.join(req.q.strip().split())
+    if not user_input:
+        raise HTTPException(400, "查询内容为空")
+
+    db = _get_db()
+    llm = None
+    try:
+        from ...llm.deepseek import get_llm
+        llm = get_llm()
+    except Exception:
+        pass
+
+    from ...engine.pipeline import NL2SQLPipeline
+    pipeline = NL2SQLPipeline(db, llm_provider=llm)
+    result = pipeline.run(user_input, user)
+
+    rows = result.get("rows", [])
+    cols = result.get("columns", [])
+
+    if not rows:
+        raise HTTPException(404, "查询无结果")
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(cols)
+    for row in rows:
+        writer.writerow([row.get(c, "") for c in cols])
+
+    output.seek(0)
+    filename = f"query_result_{user_input[:20]}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
 
 def _get_db():
     return DatabaseConnector()

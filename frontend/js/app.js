@@ -338,6 +338,13 @@ function renderTable(d) {
     });
     h += '</tbody></table>';
 
+    // CSV export button
+    if (d._query) {
+      h += `<div style="margin-top:8px">
+        <button class="btn-sm" style="background:var(--c-success);color:#fff" onclick="exportCSV('${esc(d._query)}')">📥 导出 CSV</button>
+      </div>`;
+    }
+
     // Chart for table data (if it's label+value format)
     if (cols.includes('label') && cols.includes('value') && d.rows.length > 1) {
       const cid = 'chart-' + (++msgId);
@@ -764,6 +771,26 @@ async function applySuggestion(sid) {
 async function dismissSuggestion(sid) {
   await api(`/api/admin/suggestions/${sid}/dismiss`, { method: 'POST' });
   adminTab('suggestions');
+}
+
+// ── Export ──
+function exportCSV(query) {
+  const a = document.createElement('a');
+  a.href = '/api/export/csv';
+  a.download = '';
+  // Use a form POST to trigger download with auth
+  fetch('/api/export/csv', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+    body: JSON.stringify({ q: query }),
+  }).then(r => r.blob()).then(blob => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `query_result_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
 }
 
 // ── Helpers ──

@@ -205,6 +205,7 @@ class NL2SQLPipeline:
         t1 = time.perf_counter()
         entities = ctx.entities
         completeness = entities.get("completeness", {})
+        kb_synonyms = getattr(ctx, 'kb_synonyms', [])
 
         # 构建 entity_tags (从 NER filters 转换)
         tags = []

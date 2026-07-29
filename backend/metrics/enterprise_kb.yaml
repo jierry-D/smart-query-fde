@@ -1,64 +1,149 @@
 # 企业级知识库 — 跨数据集通用的术语和规则
+# 覆盖 CRM 营销驾驶舱 8 大业务域
 
+# ═══════════════════════════════════════════
 # 同义词映射 (用户用语 → 标准术语)
+# ═══════════════════════════════════════════
 synonyms:
+  # ── 经营总览 ──
   中标额: "年度累计中标总额"
   中标金额: "年度累计中标总额"
+  中标总额: "年度累计中标总额"
+  累计中标: "年度累计中标总额"
+  年度中标: "年度累计中标总额"
   签约额: "年度累计签约总额"
   签约金额: "年度累计签约总额"
-  在跟商机: "正常跟进商机数量"
-  有效商机: "正常跟进商机数量"
-  大额逾期: "逾期90天以上应收款金额"
-  长期停滞: "长期停滞商机数量"
-  客户数: "存量客户总数"
+  累计签约: "年度累计签约总额"
+  新签合同: "本期签约额"
+  本期新签: "本期签约额"
+  当月签约: "本期签约额"
+
+  # ── 商机管理 ──
   转化率: "商机签约转化率"
+  签约转化: "商机签约转化率"
+  成交率: "商机签约转化率"
+  商机转化: "商机签约转化率"
+
+  # ── 客户管理 ──
+  客户数: "存量客户总数"
+  客户总数: "存量客户总数"
+  存量客户: "存量客户总数"
+  客户总量: "存量客户总数"
+
+  # ── 应收账款 ──
   应收余额: "应收账款总余额"
   应收款: "应收账款总余额"
+  应收账款: "应收账款总余额"
+  应收总额: "应收账款总余额"
+  大额逾期: "逾期90天以上应收款金额"
+  严重逾期: "逾期90天以上应收款金额"
+  长期逾期: "逾期90天以上应收款金额"
+  坏账: "逾期90天以上应收款金额"
+  周转率: "应收账款周转率"
+  应收周转: "应收账款周转率"
+  回款周期: "应收账款周转率"
+
+  # ── 区域/分布 ──
   各地市: "各地市中标额"
   按区域: "各地市中标额"
+  区域分布: "各地市中标额"
+  城市排名: "各地市中标额"
 
-# 业务逻辑 (术语 → 数据解释)
+  # ── 项目执行 ──
+  当月中标: "本期中标项目数"
+  月度中标: "本期中标项目数"
+  本月项目: "本期中标项目数"
+
+  # ── 风险管理 ──
+  停滞商机: "长期停滞商机数量"
+  长期停滞: "长期停滞商机数量"
+  僵尸商机: "长期停滞商机数量"
+
+  # ── 通用聚合词 ──
+  多少: "total"
+  总计: "total"
+  合计: "total"
+  排名: "ranking"
+  Top: "ranking"
+  排行: "ranking"
+
+# ═══════════════════════════════════════════
+# 业务逻辑 (术语 → SQL 条件)
+# ═══════════════════════════════════════════
 business_logic:
   大额订单:
     condition: "contract_amount > 10000"
     description: "合同金额超过1亿元的订单"
+  大单:
+    condition: "contract_amount > 10000"
+    description: "合同金额超过1亿元"
   停滞预警:
     condition: "follow_days_gap > 30 OR status = '停滞预警'"
     description: "超过30天无跟进记录或状态为停滞预警的商机"
   严重逾期:
     condition: "overdue_days > 90"
     description: "逾期超过90天的应收账款"
+  高风险:
+    condition: "overdue_days > 90 OR status = '停滞预警'"
+    description: "逾期>90天 或 停滞预警"
+  已中标:
+    condition: "is_won = 1"
+    description: "已中标的项目"
+  已签约:
+    condition: "status = '已签约'"
+    description: "已签订合同"
 
+# ═══════════════════════════════════════════
 # 字段映射 (展示名 → 数据库字段)
+# ═══════════════════════════════════════════
 field_mapping:
   金额: "contract_amount"
+  合同金额: "contract_amount"
+  中标金额: "contract_amount"
+  签约金额: "contract_amount"
   中标日期: "bid_date"
   签约日期: "signed_date"
+  合同日期: "signed_date"
   区域: "region"
+  地区: "region"
+  城市: "region"
+  地市: "region"
   业务线: "business_line"
+  业务板块: "business_line"
+  板块: "business_line"
   部门: "department"
   客户: "customer_name"
+  客户名称: "customer_name"
   状态: "status"
+  项目名称: "contract_name"
+  项目: "contract_name"
 
+# ═══════════════════════════════════════════
 # 时间智能 (全局生效)
+# ═══════════════════════════════════════════
 time_intelligence:
   ytd:
     description: "年初至当前日期的累计值"
-    keywords: ["今年", "年初至今", "YTD", "本年度", "当年度"]
+    keywords: ["今年", "年初至今", "YTD", "本年度", "当年度", "年度"]
   mtd:
     description: "月初至当前日期的累计值"
-    keywords: ["本月", "MTD", "本月份"]
+    keywords: ["本月", "MTD", "本月份", "当月", "月度"]
+  qtd:
+    description: "季初至当前日期的累计值"
+    keywords: ["本季度", "本季", "QTD", "当季度"]
   yoy:
     description: "与去年同期相比的增长率"
-    keywords: ["同比", "YoY", "较去年", "与去年"]
+    keywords: ["同比", "YoY", "较去年", "与去年", "去年同期"]
   mom:
     description: "与上月相比的增长率"
-    keywords: ["环比", "MoM", "较上月", "与上月"]
+    keywords: ["环比", "MoM", "较上月", "与上月", "上月同比"]
   target_completion:
     description: "实际值/目标值×100%"
-    keywords: ["目标完成率", "达成率", "完成情况"]
+    keywords: ["目标完成率", "达成率", "完成情况", "KPI完成"]
 
+# ═══════════════════════════════════════════
 # 业务域
+# ═══════════════════════════════════════════
 domains:
   - name: "集团经营总览"
     tables: ["bid_management", "contracts"]
@@ -88,4 +173,14 @@ domains:
   - name: "风险预警管理"
     tables: ["opportunities", "accounts_receivable"]
     owner: "管理层"
+    visible_to: ["admin", "leader"]
+
+  - name: "项目管理"
+    tables: ["bid_management", "contracts"]
+    owner: "PMO"
+    visible_to: ["admin", "leader", "employee"]
+
+  - name: "团队效能"
+    tables: ["bid_management"]
+    owner: "HR"
     visible_to: ["admin", "leader"]
