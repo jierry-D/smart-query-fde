@@ -13,6 +13,20 @@ from ..core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# ── 预编译 SQL 子句模式 ──
+_RE_WHERE = re.compile(r'\bWHERE\b', re.IGNORECASE)
+_RE_GROUP_BY = re.compile(r'\bGROUP\s+BY\b', re.IGNORECASE)
+_RE_ORDER_BY = re.compile(r'\bORDER\s+BY\b', re.IGNORECASE)
+_RE_LIMIT = re.compile(r'\bLIMIT\b', re.IGNORECASE)
+_RE_FROM_TABLE = re.compile(r'\bFROM\s+\w+', re.IGNORECASE)
+_RE_SELECT_VALUE = re.compile(
+    r'SELECT\s+(.+?)\s+AS\s+value', re.IGNORECASE
+)
+_RE_ORDER_CLAUSE = re.compile(
+    r'ORDER\s+BY\s+\S+(\s+(?:ASC|DESC))?', re.IGNORECASE
+)
+_RE_LIMIT_N = re.compile(r'LIMIT\s+\d+', re.IGNORECASE)
+
 
 def apply_entities(base_sql: str, entities: dict) -> str:
     """将 NER 实体应用到 SQL"""
@@ -50,11 +64,11 @@ def _inject_filters(sql: str, filters: list) -> str:
 
     filter_str = " AND ".join(conditions)
 
-    where_match = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
+    where_match = _RE_WHERE.search(sql)
     if where_match:
-        group_match = re.search(r'\bGROUP\s+BY\b', sql, re.IGNORECASE)
-        order_match = re.search(r'\bORDER\s+BY\b', sql, re.IGNORECASE)
-        limit_match = re.search(r'\bLIMIT\b', sql, re.IGNORECASE)
+        group_match = _RE_GROUP_BY.search(sql)
+        order_match = _RE_ORDER_BY.search(sql)
+        limit_match = _RE_LIMIT.search(sql)
 
         end_positions = []
         if group_match:
@@ -69,7 +83,7 @@ def _inject_filters(sql: str, filters: list) -> str:
         after = sql[end_pos:]
         return f"{before}\n    AND {filter_str}\n{after}"
 
-    from_match = re.search(r'\bFROM\s+\S+', sql, re.IGNORECASE)
+    from_match = _RE_FROM_TABLE.search(sql)
     if from_match:
         insert_pos = from_match.end()
         return f"{sql[:insert_pos]}\nWHERE {filter_str}\n{sql[insert_pos:]}"
@@ -89,14 +103,13 @@ def _apply_group_by(sql: str, entities: dict) -> str:
     group_field_map = {"region": "region", "business_line": "business_line"}
     field = group_field_map.get(group_by, group_by)
 
-    if re.search(r'\bGROUP\s+BY\b', sql, re.IGNORECASE):
+    if _RE_GROUP_BY.search(sql):
         return sql
 
     if 'AS label' not in sql and 'AS value' in sql:
-        sql = re.sub(
-            r'SELECT\s+(.+?)\s+AS\s+value',
+        sql = _RE_SELECT_VALUE.sub(
             f'SELECT "{field}" AS label, \\1 AS value',
-            sql, count=1, flags=re.IGNORECASE
+            sql, count=1
         )
         sql = sql.rstrip().rstrip(';')
         sql += f'\nGROUP BY "{field}"'
@@ -111,9 +124,8 @@ def _apply_order(sql: str, entities: dict) -> str:
 
     order_clause = f'ORDER BY value {order.upper()}'
 
-    if re.search(r'\bORDER\s+BY\b', sql, re.IGNORECASE):
-        sql = re.sub(r'ORDER\s+BY\s+\S+(\s+(?:ASC|DESC))?', order_clause,
-                     sql, flags=re.IGNORECASE)
+    if _RE_ORDER_BY.search(sql):
+        sql = _RE_ORDER_CLAUSE.sub(order_clause, sql)
     else:
         sql = sql.rstrip().rstrip(';')
         sql += f'\n{order_clause}'
@@ -126,8 +138,8 @@ def _apply_limit(sql: str, entities: dict) -> str:
     if limit is None:
         return sql
 
-    if re.search(r'\bLIMIT\b', sql, re.IGNORECASE):
-        sql = re.sub(r'LIMIT\s+\d+', f'LIMIT {limit}', sql, flags=re.IGNORECASE)
+    if _RE_LIMIT.search(sql):
+        sql = _RE_LIMIT_N.sub(f'LIMIT {limit}', sql)
     else:
         sql = sql.rstrip().rstrip(';')
         sql += f'\nLIMIT {limit}'
@@ -140,9 +152,9 @@ def inject_snapshot_where(sql: str, snapshot_ids: list) -> str:
     ids_str = ','.join(str(int(sid)) for sid in snapshot_ids)
     filter_clause = f"snapshot_id IN ({ids_str})"
 
-    where_match = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
-    group_match = re.search(r'\bGROUP\s+BY\b', sql, re.IGNORECASE)
-    order_match = re.search(r'\bORDER\s+BY\b', sql, re.IGNORECASE)
+    where_match = _RE_WHERE.search(sql)
+    group_match = _RE_GROUP_BY.search(sql)
+    order_match = _RE_ORDER_BY.search(sql)
 
     if where_match:
         where_end = where_match.end()
@@ -157,7 +169,7 @@ def inject_snapshot_where(sql: str, snapshot_ids: list) -> str:
         after = sql[end_pos:]
         return f"{before}\n    AND {filter_clause}\n{after}"
 
-    from_match = re.search(r'\bFROM\s+\w+', sql, re.IGNORECASE)
+    from_match = _RE_FROM_TABLE.search(sql)
     if from_match:
         insert_pos = from_match.end()
         before = sql[:insert_pos]
@@ -172,10 +184,10 @@ def inject_data_scope(sql: str, scope_sql: str) -> str:
     if scope_sql == "1=1":
         return sql
 
-    where_match = re.search(r'\bWHERE\b', sql, re.IGNORECASE)
+    where_match = _RE_WHERE.search(sql)
     if where_match:
-        group_match = re.search(r'\bGROUP\s+BY\b', sql, re.IGNORECASE)
-        order_match = re.search(r'\bORDER\s+BY\b', sql, re.IGNORECASE)
+        group_match = _RE_GROUP_BY.search(sql)
+        order_match = _RE_ORDER_BY.search(sql)
         end_positions = [len(sql)]
         if group_match:
             end_positions.append(group_match.start())
@@ -187,7 +199,7 @@ def inject_data_scope(sql: str, scope_sql: str) -> str:
         after = sql[end_pos:]
         return f"{before}\n    AND {scope_sql}\n{after}"
 
-    from_match = re.search(r'\bFROM\s+\w+', sql, re.IGNORECASE)
+    from_match = _RE_FROM_TABLE.search(sql)
     if from_match:
         insert_pos = from_match.end()
         return f"{sql[:insert_pos]}\nWHERE {scope_sql}\n{sql[insert_pos:]}"

@@ -1,5 +1,6 @@
 """对话 API — NL2SQL 查询 + 命令处理 (SSE 流式)"""
 
+import concurrent.futures
 import json
 import re
 
@@ -13,6 +14,11 @@ from ...schemas import ChatRequest
 
 logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["对话"])
+
+# Dashboard 专用线程池
+_DASHBOARD_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=9, thread_name_prefix="dashboard"
+)
 
 # ── 查询历史 ──
 
@@ -30,13 +36,11 @@ def get_history(limit: int = 20, user: dict = Depends(get_current_user)):
 
 @router.get("/dashboard")
 def get_dashboard(user: dict = Depends(get_current_user)):
-    """获取仪表盘数据 — 核心经营指标一览"""
+    """获取仪表盘数据 — 核心经营指标一览 (并行执行)"""
     db = _get_db()
 
     from ...engine.pipeline import NL2SQLPipeline
-    pipe = NL2SQLPipeline(db)
 
-    # 关键指标查询
     key_metrics = [
         ("年度累计中标总额", "💰", "中标总额"),
         ("本期签约额", "📝", "本期签约"),
@@ -46,18 +50,29 @@ def get_dashboard(user: dict = Depends(get_current_user)):
         ("正常跟进商机数量", "🎯", "在跟商机"),
     ]
 
+    def _run_metric(metric_name):
+        """线程安全的单指标查询"""
+        pipe = NL2SQLPipeline(db)
+        return pipe.run(metric_name, user)
+
+    # 并行执行 9 个查询 (6 key metrics + 1 distribution + 2 alerts)
+    all_futures = {}
+    for metric_name, icon, label in key_metrics:
+        all_futures[("card", metric_name, icon, label)] = _DASHBOARD_EXECUTOR.submit(_run_metric, metric_name)
+    all_futures[("dist", "各地市中标额")] = _DASHBOARD_EXECUTOR.submit(_run_metric, "各地市中标额")
+    all_futures[("alert", "大额逾期应收款金额")] = _DASHBOARD_EXECUTOR.submit(_run_metric, "大额逾期应收款金额")
+    all_futures[("alert", "长期停滞商机数量")] = _DASHBOARD_EXECUTOR.submit(_run_metric, "长期停滞商机数量")
+
+    # 收集结果
     cards = []
     for metric_name, icon, label in key_metrics:
         try:
-            r = pipe.run(metric_name, user)
-            alert = r.get("alert_level", "")
+            r = all_futures[("card", metric_name, icon, label)].result(timeout=30)
             cards.append({
-                "label": label,
-                "icon": icon,
-                "value": r.get("value"),
-                "unit": r.get("unit", ""),
+                "label": label, "icon": icon,
+                "value": r.get("value"), "unit": r.get("unit", ""),
                 "type": r.get("type", "number"),
-                "alert_level": alert,
+                "alert_level": r.get("alert_level", ""),
                 "metric_name": metric_name,
             })
         except Exception:
@@ -67,10 +82,9 @@ def get_dashboard(user: dict = Depends(get_current_user)):
                 "metric_name": metric_name,
             })
 
-    # 区域分布
     distribution = None
     try:
-        r = pipe.run("各地市中标额", user)
+        r = all_futures[("dist", "各地市中标额")].result(timeout=30)
         if r.get("type") == "table" and r.get("rows"):
             distribution = {
                 "labels": [row.get("label", "") for row in r["rows"][:10]],
@@ -79,16 +93,14 @@ def get_dashboard(user: dict = Depends(get_current_user)):
     except Exception:
         pass
 
-    # 预警指标
     alerts = []
     for metric_name in ["大额逾期应收款金额", "长期停滞商机数量"]:
         try:
-            r = pipe.run(metric_name, user)
+            r = all_futures[("alert", metric_name)].result(timeout=30)
             if r.get("value") and r.get("alert_level"):
                 alerts.append({
                     "metric": metric_name,
-                    "value": r["value"],
-                    "unit": r.get("unit", ""),
+                    "value": r["value"], "unit": r.get("unit", ""),
                     "alert_level": r["alert_level"],
                 })
         except Exception:
@@ -194,6 +206,14 @@ def _handle_sse(query: str, db, user: dict):
 
     async def sse_generator():
         event_queue = asyncio.Queue()
+        thread_loop = None
+
+        def _push_safe(item):
+            """线程安全地向 asyncio.Queue 推送事件"""
+            nonlocal thread_loop
+            if thread_loop is None:
+                thread_loop = asyncio.new_event_loop()
+            thread_loop.call_soon_threadsafe(event_queue.put_nowait, item)
 
         def run_pipeline():
             try:
@@ -202,38 +222,24 @@ def _handle_sse(query: str, db, user: dict):
 
                 for stage in stages:
                     try:
-                        loop = asyncio.new_event_loop()
-                        loop.run_until_complete(
-                            event_queue.put({"event": "stage", "data": stage})
-                        )
-                        loop.close()
+                        _push_safe({"event": "stage", "data": stage})
                     except Exception:
                         pass
 
                 output = {k: v for k, v in result.items()
                           if k not in ("process", "_query")}
                 try:
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(
-                        event_queue.put({"event": "result", "data": output})
-                    )
-                    loop.close()
+                    _push_safe({"event": "result", "data": output})
                 except Exception:
                     pass
             except Exception as e:
                 try:
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(
-                        event_queue.put({"event": "error", "data": {"message": str(e)}})
-                    )
-                    loop.close()
+                    _push_safe({"event": "error", "data": {"message": str(e)}})
                 except Exception:
                     pass
             finally:
                 try:
-                    loop = asyncio.new_event_loop()
-                    loop.run_until_complete(event_queue.put(None))
-                    loop.close()
+                    _push_safe(None)
                 except Exception:
                     pass
 
@@ -249,6 +255,9 @@ def _handle_sse(query: str, db, user: dict):
             yield item
 
         thread.join()
+        # 清理线程级 event loop
+        if thread_loop is not None:
+            thread_loop.close()
         yield {"event": "done", "data": json_module.dumps({"status": "complete"})}
 
     return EventSourceResponse(sse_generator())
@@ -350,9 +359,17 @@ def _handle_agent_query(query: str, db: DatabaseConnector, user: dict, llm, is_r
             return await orchestrator.run_query(query, user, db, llm)
 
     try:
-        loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(_run())
-        loop.close()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            result = loop.run_until_complete(_run())
+            loop.close()
+        else:
+            # 已有运行中的事件循环 (async context)
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                result = pool.submit(asyncio.run, _run()).result(timeout=60)
         _log_query(db, user, query, result)
         result["_query"] = query
         return result

@@ -15,6 +15,7 @@ class MetricLoader:
         self.connector = connector or DatabaseConnector()
         self._all_metrics = []
         self._name_index = {}
+        self._id_index = {}
         self._vector_store = None
         self._init_vector_store()
         self.reload()
@@ -35,6 +36,7 @@ class MetricLoader:
         """重新加载全部指标并索引到向量库"""
         self._all_metrics = []
         self._name_index = {}
+        self._id_index = {}
 
         try:
             rows = self.connector.execute("SELECT * FROM metric_registry ORDER BY metric_id")
@@ -62,6 +64,7 @@ class MetricLoader:
             }
             self._all_metrics.append(m)
             self._name_index[m["name"]] = m
+            self._id_index[m["metric_id"]] = m
 
         logger.info("指标加载: %d 个 (%d 可用)",
                      len(self._all_metrics),
@@ -195,10 +198,7 @@ class MetricLoader:
         return results[:top_k]
 
     def get_by_id(self, metric_id: str) -> dict | None:
-        for m in self._all_metrics:
-            if m["metric_id"] == metric_id:
-                return m
-        return None
+        return self._id_index.get(metric_id)
 
     def get_by_name(self, name: str) -> dict | None:
         return self._name_index.get(name)

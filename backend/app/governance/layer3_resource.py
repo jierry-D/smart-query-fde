@@ -1,9 +1,14 @@
 """Layer 3: 资源预估 — EXPLAIN 扫描行数，超限拒绝"""
 
+import re
+
 from ..core.logging import get_logger
 from ..config import config
 
 logger = get_logger(__name__)
+
+# 预编译
+_RE_ROWS = re.compile(r'~(\d+)\s*rows')
 
 
 class ResourceEstimator:
@@ -54,9 +59,7 @@ class ResourceEstimator:
         total = 0
         for row in plan:
             detail = str(row.get("detail", ""))
-            # SQLite EXPLAIN 中 detail 字段包含 "SCAN ... (~N rows)"
-            import re
-            m = re.search(r'~(\d+)\s*rows', detail)
+            m = _RE_ROWS.search(detail)
             if m:
                 total = max(total, int(m.group(1)))
         return total if total > 0 else None

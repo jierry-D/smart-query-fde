@@ -8,15 +8,19 @@ from ..core.logging import get_logger
 logger = get_logger(__name__)
 
 
-def get_kb_resolver():
-    """懒加载全局知识库解析器"""
-    from ..semantic.kb_resolver import KBResolver
+_kb_resolver = None
 
-    kb_dir = Path(__file__).parent.parent.parent / "metrics"
-    return KBResolver(
-        enterprise_kb_path=str(kb_dir / "enterprise_kb.yaml"),
-        dataset_kb_dir=str(kb_dir / "dataset_kb"),
-    )
+def get_kb_resolver():
+    """懒加载全局知识库解析器（模块级单例缓存，避免每次请求 YAML I/O）"""
+    global _kb_resolver
+    if _kb_resolver is None:
+        from ..semantic.kb_resolver import KBResolver
+        kb_dir = Path(__file__).parent.parent.parent / "metrics"
+        _kb_resolver = KBResolver(
+            enterprise_kb_path=str(kb_dir / "enterprise_kb.yaml"),
+            dataset_kb_dir=str(kb_dir / "dataset_kb"),
+        )
+    return _kb_resolver
 
 
 def enhance_with_kb(ctx) -> None:
@@ -32,29 +36,28 @@ def enhance_with_kb(ctx) -> None:
         kb = get_kb_resolver()
         hint = ctx.entities.get("metric_hint", ctx.query)
 
-        # 1. 同义词扩展
+        # 1. 同义词扩展 + 业务逻辑注入 (合并为一次遍历)
         kb_synonyms = []
         for w in hint.replace('的', ' ').split():
-            if len(w) >= 2:
-                resolved = kb.resolve_synonym(w)
-                if resolved and resolved != w:
-                    kb_synonyms.append(resolved)
+            if len(w) < 2:
+                continue
+            # 同义词
+            resolved = kb.resolve_synonym(w)
+            if resolved and resolved != w:
+                kb_synonyms.append(resolved)
+            # 业务逻辑
+            logic = kb.resolve_business_logic(w)
+            if logic and isinstance(logic, dict):
+                cond = logic.get("condition", "")
+                if cond:
+                    ctx.entities.setdefault("kb_conditions", []).append({
+                        "term": w,
+                        "condition": cond,
+                        "description": logic.get("description", ""),
+                    })
 
         if kb_synonyms:
             ctx.kb_synonyms = kb_synonyms
-
-        # 2. 业务逻辑注入
-        for w in hint.replace('的', ' ').split():
-            if len(w) >= 2:
-                logic = kb.resolve_business_logic(w)
-                if logic and isinstance(logic, dict):
-                    cond = logic.get("condition", "")
-                    if cond:
-                        ctx.entities.setdefault("kb_conditions", []).append({
-                            "term": w,
-                            "condition": cond,
-                            "description": logic.get("description", ""),
-                        })
 
         elapsed = (time.perf_counter() - t_kb) * 1000
         detail_parts = []

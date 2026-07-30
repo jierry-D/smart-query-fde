@@ -14,10 +14,19 @@ DESTRUCTIVE_KEYWORDS = [
 ]
 
 # 敏感字段模式
-SENSITIVE_PATTERNS = [
-    r'\bpassword\b', r'\bphone\b', r'\bid_card\b', r'\bbank_card\b',
-    r'\bsecret\b', r'\btoken\b', r'\bapi_key\b',
+_SENSITIVE_PATTERNS = [
+    re.compile(r'\bpassword\b', re.IGNORECASE),
+    re.compile(r'\bphone\b', re.IGNORECASE),
+    re.compile(r'\bid_card\b', re.IGNORECASE),
+    re.compile(r'\bbank_card\b', re.IGNORECASE),
+    re.compile(r'\bsecret\b', re.IGNORECASE),
+    re.compile(r'\btoken\b', re.IGNORECASE),
+    re.compile(r'\bapi_key\b', re.IGNORECASE),
 ]
+
+# 字符串字面量移除 (用于关键字检查前清洗)
+_RE_SINGLE_QUOTED = re.compile(r"'[^']*'")
+_RE_DOUBLE_QUOTED = re.compile(r'"[^"]*"')
 
 MAX_QUERY_LENGTH = 10000
 
@@ -47,8 +56,8 @@ class SQLSecurityChecker:
 
         # 检查敏感字段 (admin 可豁免)
         if user.get("role") != "admin":
-            for pattern in SENSITIVE_PATTERNS:
-                if re.search(pattern, sql, re.IGNORECASE):
+            for pattern in _SENSITIVE_PATTERNS:
+                if pattern.search(sql):
                     return {"denied": True, "reason": f"查询涉及敏感字段"}
 
         return {"denied": False}
@@ -56,8 +65,6 @@ class SQLSecurityChecker:
     @staticmethod
     def _has_keyword_outside_strings(sql: str, keyword: str) -> bool:
         """检查关键字是否出现在 SQL 的字符串字面量之外"""
-        # 移除字符串字面量后检查
-        cleaned = re.sub(r"'[^']*'", '', sql)
-        cleaned = re.sub(r'"[^"]*"', '', cleaned)
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-        return bool(re.search(pattern, cleaned, re.IGNORECASE))
+        cleaned = _RE_SINGLE_QUOTED.sub('', sql)
+        cleaned = _RE_DOUBLE_QUOTED.sub('', cleaned)
+        return bool(re.search(r'\b' + re.escape(keyword) + r'\b', cleaned, re.IGNORECASE))

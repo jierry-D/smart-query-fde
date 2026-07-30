@@ -1,6 +1,8 @@
 """Layer 5: 结果缓存 — SQL 规范化 + TTL 缓存 + 相似查询提示"""
 
 import hashlib
+import re
+import threading
 import time
 import json
 from collections import OrderedDict
@@ -10,14 +12,18 @@ from ..config import config
 
 logger = get_logger(__name__)
 
+# 预编译模式
+_RE_WHITESPACE = re.compile(r'\s+')
+
 
 class ResultCache:
-    """结果缓存 (内存 LRU + TTL, O(1) 淘汰)"""
+    """结果缓存 (内存 LRU + TTL, O(1) 淘汰, 线程安全)"""
 
     def __init__(self, max_size: int = 500):
         self.max_size = max_size
         self.ttl = config.governance_cache_ttl
         self._cache: OrderedDict[str, dict] = OrderedDict()
+        self._lock = threading.Lock()
 
     def apply(self, sql: str) -> dict:
         """
@@ -26,35 +32,34 @@ class ResultCache:
         """
         key = self._normalize(sql)
 
-        if key in self._cache:
-            entry = self._cache[key]
-            if time.time() - entry["ts"] < self.ttl:
-                logger.debug("Cache hit: %s...", key[:60])
-                # Move to end (most recently used)
-                self._cache.move_to_end(key)
-                return {"cache_hit": True, "cached_result": entry["result"], "cache_key": key}
-            else:
-                del self._cache[key]
+        with self._lock:
+            if key in self._cache:
+                entry = self._cache[key]
+                if time.time() - entry["ts"] < self.ttl:
+                    logger.debug("Cache hit: %s...", key[:60])
+                    self._cache.move_to_end(key)
+                    return {"cache_hit": True, "cached_result": entry["result"], "cache_key": key}
+                else:
+                    del self._cache[key]
 
         return {"cache_hit": False, "cached_result": None, "cache_key": key}
 
     def store(self, key: str, result: dict):
         """存入缓存 (LRU 淘汰)"""
-        if len(self._cache) >= self.max_size:
-            # O(1) 淘汰最旧条目 (OrderedDict.popitem with last=False)
-            oldest_key, _ = self._cache.popitem(last=False)
-            logger.debug("Cache eviction: %s", oldest_key[:60])
-        self._cache[key] = {"result": result, "ts": time.time()}
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                oldest_key, _ = self._cache.popitem(last=False)
+                logger.debug("Cache eviction: %s", oldest_key[:60])
+            self._cache[key] = {"result": result, "ts": time.time()}
 
     def clear(self):
-        self._cache.clear()
+        with self._lock:
+            self._cache.clear()
 
     @staticmethod
     def _normalize(sql: str) -> str:
         """规范化 SQL 用于缓存 key"""
-        import re
-        normalized = sql.strip()
-        normalized = re.sub(r'\s+', ' ', normalized)
+        normalized = _RE_WHITESPACE.sub(' ', sql.strip())
         normalized = normalized.lower()
         return hashlib.md5(normalized.encode()).hexdigest()
 

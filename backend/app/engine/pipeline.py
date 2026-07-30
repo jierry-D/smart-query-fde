@@ -1,10 +1,16 @@
 """NL2SQL 查询流水线编排器 — Stage 0-7"""
 
+import concurrent.futures
 import time
 
 from ..core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# 模块级共享线程池 (避免每次 LLM 调用创建/销毁)
+_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="pipeline"
+)
 
 
 class PipelineContext:
@@ -59,11 +65,12 @@ class NL2SQLPipeline:
         t_start = time.perf_counter()
         ctx = PipelineContext(query, user, self.db)
 
-        # Stage 0: 数据预检
-        self._stage0_preflight(ctx)
-
-        # Stage 1: NER
-        self._stage1_ner(ctx)
+        # Stage 0 + Stage 1: 并行执行 (无数据依赖，写入不同字段)
+        # Stage 0 → ctx.preflight, Stage 1 → ctx.entities
+        f0 = _EXECUTOR.submit(self._stage0_preflight, ctx)
+        f1 = _EXECUTOR.submit(self._stage1_ner, ctx)
+        f0.result()
+        f1.result()
 
         # Stage 1.2: 知识库增强 (同义词扩展 + 业务逻辑)
         from .stage_kb import enhance_with_kb
@@ -77,7 +84,7 @@ class NL2SQLPipeline:
             clarification["process"] = ctx.stages
             return clarification
 
-        # Stage 2: Time
+        # Stage 2: Time (可与 Stage 1 并行，但写 ctx.entities 不同 key，保守起见顺序执行)
         self._stage2_time(ctx)
 
         # Stage 3: Metric
@@ -163,41 +170,42 @@ class NL2SQLPipeline:
         from ..semantic.loader import MetricLoader
         loader = MetricLoader(ctx.db)
 
-        # 多级搜索 (原始查询优先 → KB同义词增强)
+        # 多级搜索: 早停策略 — 高优先级查询命中即停止
+        all_results = {}
         search_queries = []
-        # 1. 清洗后的查询 (最高优先级 - 保留用户原意)
+        # 1. 清洗后的查询 (最高优先级)
         if ctx.cleaned_query not in search_queries:
             search_queries.append(ctx.cleaned_query)
         # 2. NER提取的指标提示
         hint = ctx.entities.get("metric_hint", "")
         if hint and hint not in search_queries:
             search_queries.append(hint)
-        # 3. KB同义词扩展 (增强, 不覆盖)
+        # 3. KB同义词扩展
         kb_synonyms = getattr(ctx, 'kb_synonyms', [])
         for syn in kb_synonyms:
             if syn not in search_queries:
                 search_queries.append(syn)
-        # 4. 原始查询
+        # 4. 原始查询 (兜底)
         if ctx.query not in search_queries:
             search_queries.append(ctx.query)
 
-        # 多轮搜索, 合并结果取最优 (不早停)
-        # priority_index: 记录最早匹配的搜索轮次, 用于同分tiebreaker
-        all_results = {}
+        # 早停搜索: 高优先级查询有结果就不往下搜
         for qi, sq in enumerate(search_queries):
             round_results = loader.search(sq, top_k=5)
             for rr in round_results:
                 mid = rr["metric"]["metric_id"]
                 if mid not in all_results:
                     all_results[mid] = rr
-                    all_results[mid]["_priority"] = qi  # 越小越优先
+                    all_results[mid]["_priority"] = qi
                 elif rr["score"] > all_results[mid]["score"]:
                     all_results[mid] = rr
                     all_results[mid]["_priority"] = qi
                 elif rr["score"] == all_results[mid]["score"] and qi < all_results[mid].get("_priority", 999):
-                    # 同分时优先更早搜索轮次的结果 (cleaned_query > KB synonym)
                     all_results[mid] = rr
                     all_results[mid]["_priority"] = qi
+            # 已有高置信结果 (score >= 0.8) → 早停
+            if all_results and any(r["score"] >= 0.8 for r in all_results.values()):
+                break
         # 按分数降序, 同分按优先级升序
         # 有 group_by 时: 表格型指标加权 (NER 已识别分组意图)
         has_group = ctx.entities.get("group_by")
@@ -343,15 +351,13 @@ class NL2SQLPipeline:
     def _run_async(coro):
         """在线程池中运行异步协程, 兼容同步调用场景"""
         import asyncio
-        import concurrent.futures
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(coro)
 
-        with concurrent.futures.ThreadPoolExecutor() as pool:
-            future = pool.submit(asyncio.run, coro)
-            return future.result(timeout=30)
+        future = _EXECUTOR.submit(asyncio.run, coro)
+        return future.result(timeout=30)
 
     def _get_tables_info(self, ctx: PipelineContext) -> str:
         """获取相关表结构信息"""
@@ -468,8 +474,11 @@ class NL2SQLPipeline:
                     ctx.snapshot_ids or [],
                     ti_result.get("previous_ids", []),
                 )
-            # 自动环比: 无time_intelligence时比较相邻快照
-            if not ti_result or not ti_result.get("available"):
+            # 自动环比: 仅在用户查询隐含时间对比意图时触发
+            _has_time_intent = any(kw in ctx.query for kw in (
+                "环比", "变化", "趋势", "增长", "下降", "比较", "对比", "上月", "上季"
+            ))
+            if _has_time_intent and (not ti_result or not ti_result.get("available")):
                 ti_result = _auto_mom(ctx.db, ctx.matched_metric, value, ctx.snapshot_ids)
 
             return {

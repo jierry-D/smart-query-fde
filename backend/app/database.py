@@ -1,6 +1,8 @@
 """数据库连接管理 — SQLite (dev) / PostgreSQL (prod)"""
 
+import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from contextlib import contextmanager
@@ -32,14 +34,45 @@ def _retry_on_db_error(fn, *args, **kwargs):
 
 
 class DatabaseConnector:
-    """统一的数据库访问抽象层"""
+    """统一的数据库访问抽象层 (thread-local 连接复用)"""
 
     def __init__(self, db_path: str = None):
         self.db_path = db_path or config.db_path
+        self._local = threading.local()
+
+    def _get_conn(self):
+        """获取或创建当前线程的持久连接"""
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA foreign_keys=ON")
+            self._local.conn = conn
+        return self._local.conn
+
+    def close(self):
+        """关闭当前线程的连接"""
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            try:
+                self._local.conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
 
     @contextmanager
     def connect(self):
-        """获取连接 (自动提交/回滚/关闭)"""
+        """获取连接 (复用 thread-local, 自动提交/回滚, 不关闭)"""
+        conn = self._get_conn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @contextmanager
+    def fresh_connect(self):
+        """获取独立连接 (自动提交/回滚/关闭) — 用于需要隔离的场景"""
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
@@ -200,6 +233,9 @@ class DatabaseConnector:
 # PostgreSQL 连接器 (生产环境)
 # ═══════════════════════════════════════════
 
+# 预编译 ? → %s 替换模式
+_RE_QMARK = re.compile(r'\?')
+
 class PostgresConnector:
     """PostgreSQL — 与 DatabaseConnector 接口兼容"""
 
@@ -233,10 +269,8 @@ class PostgresConnector:
 
     @staticmethod
     def _to_pg(sql: str) -> str:
-        """安全替换 ? → %s（仅在 SQL 参数占位符位置）"""
-        import re
-        # 替换 SQL 中的 ? 占位符为 %s (排除字符串字面量中的 ?)
-        return re.sub(r'\?', '%s', sql)
+        """安全替换 ? → %s"""
+        return _RE_QMARK.sub('%s', sql)
 
     def execute(self, sql: str, params: tuple = ()) -> list[dict]:
         pg_sql = self._to_pg(sql)

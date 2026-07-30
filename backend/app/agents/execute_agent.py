@@ -20,12 +20,13 @@ class ExecuteAgent(BaseAgent):
         user = ctx.user
         db = ctx.db
 
-        # 1. 治理检查 (五层)
-        if not self._governance_check(sql, user, db):
+        # 1. 治理检查 (五层: RBAC / SQL安全 / 资源预估 / 熔断 / 缓存)
+        gov_result = self._governance_check(sql, user, db)
+        if gov_result is None:
             return AgentResult.fail("治理检查未通过")
 
-        # 2. 注入 RBAC 数据范围
-        sql = self._inject_rbac(sql, user)
+        # 2. 使用治理层处理后的 SQL (已注入 RBAC 数据范围)
+        sql = gov_result.get("final_sql", sql)
 
         # 3. 执行 SQL
         try:
@@ -66,27 +67,17 @@ class ExecuteAgent(BaseAgent):
             "time_intel": ctx.time_intel,
         })
 
-    def _governance_check(self, sql: str, user: dict, db) -> bool:
-        """五层治理检查"""
+    def _governance_check(self, sql: str, user: dict, db) -> dict | None:
+        """五层治理检查，返回治理结果 dict（含 final_sql），被拒时返回 None"""
         try:
             from ..governance import GovernanceManager
             gm = GovernanceManager(db)
             result = gm.apply(sql, user)
             if result.get("denied"):
                 logger.warning("Query denied by governance: %s", result.get("reason"))
-                return False
-            if result.get("cache_hit"):
-                ctx = object.__getattribute__(self, '__ctx__') if hasattr(self, '__ctx__') else None
-            return True
+                return None
+            return result
         except Exception as e:
             logger.warning("Governance check error (allowing): %s", e)
-            return True  # 宽松策略: 检查失败不阻塞
-
-    def _inject_rbac(self, sql: str, user: dict) -> str:
-        """注入 RBAC 数据范围"""
-        try:
-            from ..governance.layer1_auth import AuthFilter
-            af = AuthFilter()
-            return af.apply(sql, user)
-        except Exception:
-            return sql
+            # 治理层异常时放行原始 SQL（宽松策略）
+            return {"final_sql": sql, "scope_label": "unknown", "cache_hit": False}

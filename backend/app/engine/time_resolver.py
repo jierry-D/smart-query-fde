@@ -17,6 +17,51 @@ from ..core.logging import get_logger
 
 logger = get_logger(__name__)
 
+# ── 预编译时间正则 ──
+
+_RE_QUARTER = re.compile(
+    r'(Q\s*[1-4])\s*(?:季度)?|'
+    r'第\s*([一二三四1-4])\s*季度|'
+    r'([一二三四1-4])\s*季度|'
+    r'([一二三四1-4])\s*季(?!度)'
+)
+_RE_QUARTER_STRIP = re.compile(
+    r'Q\s*[1-4]\s*(?:季度)?|'
+    r'第\s*[一二三四1-4]\s*季度|'
+    r'[一二三四1-4]\s*季度|'
+    r'[一二三四1-4]\s*季(?!度)'
+)
+_RE_MONTH_RANGE = re.compile(r'(\d{1,2})\s*月?\s*[-到至]\s*(\d{1,2})\s*月?')
+_RE_MONTH_RANGE_STRIP = re.compile(r'\d{1,2}\s*月?\s*[-到至]\s*\d{1,2}\s*月?')
+_RE_HALF_YEAR = re.compile(r'(上|下)半年')
+_RE_HALF_YEAR_STRIP = re.compile(r'[上下]半年')
+_RE_SINGLE_MONTH = re.compile(r'(\d{1,2})\s*月')
+_RE_SINGLE_MONTH_STRIP = re.compile(r'\d{1,2}\s*月')
+_RE_LAST_QUARTER = re.compile(r'(上个?|前[一1]个?)\s*季度')
+_RE_LAST_QUARTER_STRIP = re.compile(r'(上个?|前[一1]个?)\s*季度')
+_RE_THIS_QUARTER = re.compile(r'(本|这个?|当)\s*季度')
+_RE_THIS_QUARTER_STRIP = re.compile(r'(本|这个?|当)\s*季度')
+_RE_LAST_MONTH = re.compile(r'(上个?|前[一1]个?)\s*月(?!份)')
+_RE_LAST_MONTH_STRIP = re.compile(r'(上个?|前[一1]个?)\s*月')
+_RE_THIS_MONTH = re.compile(r'(这个?|本|当)\s*月')
+_RE_THIS_MONTH_STRIP = re.compile(r'(这个?|本|当)\s*月')
+_RE_YTD = re.compile(r'(今年|年初至今|YTD|本年度?|当年度?)', re.IGNORECASE)
+_RE_YTD_STRIP = re.compile(r'(今年|年初至今|YTD|本年度?|当年度?)', re.IGNORECASE)
+_RE_YOY = re.compile(r'同比|YOY|YoY|与去年|较去年', re.IGNORECASE)
+_RE_YOY_STRIP = re.compile(r'同比|YOY|YoY|与去年|较去年', re.IGNORECASE)
+_RE_MOM = re.compile(r'环比|MOM|MoM|较上月|与上月', re.IGNORECASE)
+_RE_MOM_STRIP = re.compile(r'环比|MOM|MoM|较上月|与上月', re.IGNORECASE)
+_RE_LAST_HALF_YEAR = re.compile(r'(?:近|最近|过去)\s*半年')
+_RE_LAST_HALF_YEAR_STRIP = re.compile(r'(?:近|最近|过去)\s*半年')
+_RE_RECENT_MONTHS = re.compile(
+    r'(?:近|最近|过去)\s*([0-9一二两三四五六七八九十]+)\s*(?:个)?月'
+)
+_RE_RECENT_MONTHS_STRIP = re.compile(
+    r'(?:近|最近|过去)\s*[0-9一二两三四五六七八九十]+\s*(?:个)?月'
+)
+_RE_LAST_YEAR = re.compile(r'(去年|上[一1]年)')
+_RE_LAST_YEAR_STRIP = re.compile(r'(去年|上[一1]年)')
+
 # ── 中文数字 ──
 
 _CN_NUM = {
@@ -83,13 +128,7 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
     # ═══ 优先级 1: 绝对时间 ═══
 
     # Q1-Q4 / 季度
-    quarter_match = re.search(
-        r'(Q\s*[1-4])\s*(?:季度)?|'
-        r'第\s*([一二三四1-4])\s*季度|'
-        r'([一二三四1-4])\s*季度|'
-        r'([一二三四1-4])\s*季(?!度)',
-        cleaned
-    )
+    quarter_match = _RE_QUARTER.search(cleaned)
     if quarter_match:
         q_map = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
         chinese_map = {'一': 1, '二': 2, '三': 3, '四': 4}
@@ -111,28 +150,22 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
             periods = _months_in_range(today.year, start_m, today.year, end_m)
             snapshot_ids = _periods_to_ids(periods)
             period_label = f"{today.year}-Q{q}"
-            cleaned = re.sub(
-                r'Q\s*[1-4]\s*(?:季度)?|'
-                r'第\s*[一二三四1-4]\s*季度|'
-                r'[一二三四1-4]\s*季度|'
-                r'[一二三四1-4]\s*季(?!度)',
-                '', cleaned
-            ).strip()
+            cleaned = _RE_QUARTER_STRIP.sub('', cleaned).strip()
             return cleaned, snapshot_ids, period_label, time_intel
 
     # 月份范围: "7到9月" / "7-9月"
-    range_match = re.search(r'(\d{1,2})\s*月?\s*[-到至]\s*(\d{1,2})\s*月?', cleaned)
+    range_match = _RE_MONTH_RANGE.search(cleaned)
     if range_match:
         start_m, end_m = int(range_match.group(1)), int(range_match.group(2))
         if 1 <= start_m <= 12 and 1 <= end_m <= 12 and start_m <= end_m:
             periods = _months_in_range(today.year, start_m, today.year, end_m)
             snapshot_ids = _periods_to_ids(periods)
             period_label = f"{today.year}-{start_m:02d} ~ {today.year}-{end_m:02d}"
-            cleaned = re.sub(r'\d{1,2}\s*月?\s*[-到至]\s*\d{1,2}\s*月?', '', cleaned).strip()
+            cleaned = _RE_MONTH_RANGE_STRIP.sub('', cleaned).strip()
             return cleaned, snapshot_ids, period_label, time_intel
 
     # 上半年 / 下半年
-    half_match = re.search(r'(上|下)半年', cleaned)
+    half_match = _RE_HALF_YEAR.search(cleaned)
     if half_match:
         half = half_match.group(1)
         if half == '上':
@@ -142,24 +175,24 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
             periods = _months_in_range(today.year, 7, today.year, 12)
             period_label = f"{today.year}-H2"
         snapshot_ids = _periods_to_ids(periods)
-        cleaned = re.sub(r'[上下]半年', '', cleaned).strip()
+        cleaned = _RE_HALF_YEAR_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # 单月: "7月"
-    single_match = re.search(r'(\d{1,2})\s*月', cleaned)
+    single_match = _RE_SINGLE_MONTH.search(cleaned)
     if single_match:
         m = int(single_match.group(1))
         if 1 <= m <= 12:
             period = f"{today.year}-{m:02d}"
             snapshot_ids = _periods_to_ids([period])
             period_label = period if snapshot_ids else f"{period} (无数据)"
-            cleaned = re.sub(r'\d{1,2}\s*月', '', cleaned).strip()
+            cleaned = _RE_SINGLE_MONTH_STRIP.sub('', cleaned).strip()
             return cleaned, snapshot_ids, period_label, time_intel
 
     # ═══ 优先级 2: 相对时间 ═══
 
     # "上个季度"
-    if re.search(r'(上个?|前[一1]个?)\s*季度', cleaned):
+    if _RE_LAST_QUARTER.search(cleaned):
         current_q = (today.month - 1) // 3 + 1
         prev_q = current_q - 1 if current_q > 1 else 4
         prev_year = today.year if current_q > 1 else today.year - 1
@@ -168,49 +201,49 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
         periods = _months_in_range(prev_year, start_m, prev_year, end_m)
         snapshot_ids = _periods_to_ids(periods)
         period_label = f"{prev_year}-Q{prev_q}"
-        cleaned = re.sub(r'(上个?|前[一1]个?)\s*季度', '', cleaned).strip()
+        cleaned = _RE_LAST_QUARTER_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "本季度"
-    if re.search(r'(本|这个?|当)\s*季度', cleaned):
+    if _RE_THIS_QUARTER.search(cleaned):
         current_q = (today.month - 1) // 3 + 1
         q_map = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
         start_m, end_m = q_map[current_q]
         periods = _months_in_range(today.year, start_m, today.year, end_m)
         snapshot_ids = _periods_to_ids(periods)
         period_label = f"{today.year}-Q{current_q}"
-        cleaned = re.sub(r'(本|这个?|当)\s*季度', '', cleaned).strip()
+        cleaned = _RE_THIS_QUARTER_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "上个月"
-    if re.search(r'(上个?|前[一1]个?)\s*月(?!份)', cleaned):
+    if _RE_LAST_MONTH.search(cleaned):
         prev_m = today.month - 1 if today.month > 1 else 12
         prev_y = today.year if today.month > 1 else today.year - 1
         period = f"{prev_y}-{prev_m:02d}"
         snapshot_ids = _periods_to_ids([period])
         period_label = period if snapshot_ids else f"{period} (无数据)"
-        cleaned = re.sub(r'(上个?|前[一1]个?)\s*月', '', cleaned).strip()
+        cleaned = _RE_LAST_MONTH_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "本月"
-    if re.search(r'(这个?|本|当)\s*月', cleaned):
+    if _RE_THIS_MONTH.search(cleaned):
         period = f"{today.year}-{today.month:02d}"
         snapshot_ids = _periods_to_ids([period])
         period_label = period if snapshot_ids else f"{period} (无数据)"
-        cleaned = re.sub(r'(这个?|本|当)\s*月', '', cleaned).strip()
+        cleaned = _RE_THIS_MONTH_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "今年" / "YTD" → 标记为时间智能
-    if re.search(r'(今年|年初至今|YTD|本年度?|当年度?)', cleaned, re.IGNORECASE):
+    if _RE_YTD.search(cleaned):
         periods = _months_in_range(today.year, 1, today.year, today.month)
         snapshot_ids = _periods_to_ids(periods)
         period_label = f"{today.year}-01 ~ {today.year}-{today.month:02d} (YTD)"
         time_intel = {"function": "ytd", "year": today.year}
-        cleaned = re.sub(r'(今年|年初至今|YTD|本年度?|当年度?)', '', cleaned, re.IGNORECASE).strip()
+        cleaned = _RE_YTD_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "同比" → 标记为时间智能
-    if re.search(r'同比|YOY|YoY|与去年|较去年', cleaned, re.IGNORECASE):
+    if _RE_YOY.search(cleaned):
         # 默认使用当前月份 vs 去年同月
         period = f"{today.year}-{today.month:02d}"
         prev_period = f"{today.year-1}-{today.month:02d}"
@@ -224,11 +257,11 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
             "current_ids": snapshot_ids,
             "previous_ids": prev_ids,
         }
-        cleaned = re.sub(r'同比|YOY|YoY|与去年|较去年', '', cleaned, re.IGNORECASE).strip()
+        cleaned = _RE_YOY_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "环比" → 标记为时间智能
-    if re.search(r'环比|MOM|MoM|较上月|与上月', cleaned, re.IGNORECASE):
+    if _RE_MOM.search(cleaned):
         prev_m = today.month - 1 if today.month > 1 else 12
         prev_y = today.year if today.month > 1 else today.year - 1
         period = f"{today.year}-{today.month:02d}"
@@ -243,11 +276,11 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
             "current_ids": snapshot_ids,
             "previous_ids": prev_ids,
         }
-        cleaned = re.sub(r'环比|MOM|MoM|较上月|与上月', '', cleaned, re.IGNORECASE).strip()
+        cleaned = _RE_MOM_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "近半年"
-    if re.search(r'(?:近|最近|过去)\s*半年', cleaned):
+    if _RE_LAST_HALF_YEAR.search(cleaned):
         start_m = today.month - 5
         start_y = today.year
         while start_m <= 0:
@@ -256,13 +289,11 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
         periods = _months_in_range(start_y, start_m, today.year, today.month)
         snapshot_ids = _periods_to_ids(periods)
         period_label = f"近半年 ({periods[0]} ~ {periods[-1]})" if periods else "近半年"
-        cleaned = re.sub(r'(?:近|最近|过去)\s*半年', '', cleaned).strip()
+        cleaned = _RE_LAST_HALF_YEAR_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # "近N个月"
-    recent_match = re.search(
-        r'(?:近|最近|过去)\s*([0-9一二两三四五六七八九十]+)\s*(?:个)?月', cleaned
-    )
+    recent_match = _RE_RECENT_MONTHS.search(cleaned)
     if recent_match:
         n = _parse_num(recent_match.group(1))
         if n and 1 <= n <= 24:
@@ -274,16 +305,16 @@ def resolve_time(query: str, snapshots: list[dict]) -> tuple:
             periods = _months_in_range(start_y, start_m, today.year, today.month)
             snapshot_ids = _periods_to_ids(periods)
             period_label = f"近{n}个月 ({periods[0]} ~ {periods[-1]})" if periods else f"近{n}个月"
-            cleaned = re.sub(r'(?:近|最近|过去)\s*[0-9一二两三四五六七八九十]+\s*(?:个)?月', '', cleaned).strip()
+            cleaned = _RE_RECENT_MONTHS_STRIP.sub('', cleaned).strip()
             return cleaned, snapshot_ids, period_label, time_intel
 
     # "去年"
-    if re.search(r'(去年|上[一1]年)', cleaned):
+    if _RE_LAST_YEAR.search(cleaned):
         prev_year = today.year - 1
         periods = _months_in_range(prev_year, 1, prev_year, 12)
         snapshot_ids = _periods_to_ids(periods)
         period_label = f"{prev_year}年"
-        cleaned = re.sub(r'(去年|上[一1]年)', '', cleaned).strip()
+        cleaned = _RE_LAST_YEAR_STRIP.sub('', cleaned).strip()
         return cleaned, snapshot_ids, period_label, time_intel
 
     # ═══ 优先级 3: 无时间词 ═══

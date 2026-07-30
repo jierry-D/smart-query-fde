@@ -12,39 +12,50 @@ NER 引擎 — 纯规则自然语言实体提取
 """
 
 import re
+import time
 
 from ..core.logging import get_logger
 
 logger = get_logger(__name__)
 
-# ── 聚合意图模式 ──
-INTENT_PATTERNS = [
-    (r'(?:排名|排行|Top\s*\d+|前\s*\d+|最高|最低|最好|最差)', 'ranking', 10),
-    (r'(?:趋势|变化|走势|逐月|每月)', 'trend', 9),
-    (r'(?:分布|占比|分别|比例|构成)', 'distribution', 8),
-    (r'(?:个数|数量|多少个|几项|几笔|几次|计数)', 'count', 7),
-    (r'(?:平均|均值|人均)', 'average', 6),
-    (r'(?:总额|合计|总共|多少|金额|额|情况|怎么样|如何)', 'aggregate', 5),
+# ── 模块级维度缓存 (TTL=300s, 避免每次请求 5-6 次 SELECT DISTINCT) ──
+
+_DIM_CACHE: dict = {"regions": {}, "business_lines": {}, "ts": 0}
+_DIM_CACHE_TTL: float = 300.0
+_DIM_CACHE_LOCK = None  # lazy import threading.Lock
+
+# ── 预编译正则 ──
+
+# 聚合意图模式
+_INTENT_PATTERNS = [
+    (re.compile(r'(?:排名|排行|Top\s*\d+|前\s*\d+|最高|最低|最好|最差)'), 'ranking', 10),
+    (re.compile(r'(?:趋势|变化|走势|逐月|每月)'), 'trend', 9),
+    (re.compile(r'(?:分布|占比|分别|比例|构成)'), 'distribution', 8),
+    (re.compile(r'(?:个数|数量|多少个|几项|几笔|几次|计数)'), 'count', 7),
+    (re.compile(r'(?:平均|均值|人均)'), 'average', 6),
+    (re.compile(r'(?:总额|合计|总共|多少|金额|额|情况|怎么样|如何)'), 'aggregate', 5),
 ]
 
-# ── 分组维度模式 ──
-GROUP_PATTERNS = [
-    (r'(?:按区域|各地区|各地市|各市|每个城市|每个区|分区域)', 'region'),
-    (r'(?:按业务线|各板块|各业务|每个业务|分业务)', 'business_line'),
+# 分组维度模式
+_GROUP_PATTERNS = [
+    (re.compile(r'(?:按区域|各地区|各地市|各市|每个城市|每个区|分区域)'), 'region'),
+    (re.compile(r'(?:按业务线|各板块|各业务|每个业务|分业务)'), 'business_line'),
 ]
 
-# ── 排序 ──
-ORDER_DESC_PATTERNS = [
-    r'(?:最高|最好|最大|最多|排名|排行|Top|前\d)',
-    r'(?:降序|倒序|从高到低|从大到小)',
+# 排序
+_ORDER_DESC_PATTERNS = [
+    re.compile(r'(?:最高|最好|最大|最多|排名|排行|Top|前\d)'),
+    re.compile(r'(?:降序|倒序|从高到低|从大到小)'),
 ]
-ORDER_ASC_PATTERNS = [
-    r'(?:最低|最差|最小|最少)',
-    r'(?:升序|正序|从低到高|从小到大)',
+_ORDER_ASC_PATTERNS = [
+    re.compile(r'(?:最低|最差|最小|最少)'),
+    re.compile(r'(?:升序|正序|从低到高|从小到大)'),
 ]
 
-TOP_N_PATTERN = re.compile(r'(?:Top\s*|前\s*)(\d+)', re.IGNORECASE)
-DIM_SUFFIXES = re.compile(r'(?:市|区|县|省|自治区|板块|业务|部门|组|中心)$')
+_TOP_N_PATTERN = re.compile(r'(?:Top\s*|前\s*)(\d+)', re.IGNORECASE)
+_DIM_SUFFIXES = re.compile(r'(?:市|区|县|省|自治区|板块|业务|部门|组|中心)$')
+_NOISE_PATTERN = re.compile(r'(?:的|了|吗|呢|吧|啊|呀|怎么样|如何|是什么|是多少|请问|帮我|查一下|查询|看看|能不能)')
+_SUFFIX_PATTERN = re.compile(r'(?:情况|状况|数据|信息|统计|汇总|明细|列表)')
 
 
 class NEREngine:
@@ -59,7 +70,23 @@ class NEREngine:
     def _ensure_init(self):
         if self._initialized or not self.connector:
             return
+        global _DIM_CACHE, _DIM_CACHE_LOCK
+        # 尝试命中缓存
+        now = time.time()
+        if now - _DIM_CACHE["ts"] < _DIM_CACHE_TTL and (_DIM_CACHE["regions"] or _DIM_CACHE["business_lines"]):
+            self.regions = _DIM_CACHE["regions"]
+            self.business_lines = _DIM_CACHE["business_lines"]
+            self._initialized = True
+            return
+        # 缓存未命中 → 加载 + 写入缓存 (线程安全)
         self._load_dimensions()
+        if _DIM_CACHE_LOCK is None:
+            import threading
+            _DIM_CACHE_LOCK = threading.Lock()
+        with _DIM_CACHE_LOCK:
+            _DIM_CACHE["regions"] = self.regions
+            _DIM_CACHE["business_lines"] = self.business_lines
+            _DIM_CACHE["ts"] = now
         self._initialized = True
 
     def _load_dimensions(self):
@@ -99,7 +126,7 @@ class NEREngine:
         if not val:
             return
         mapping[val] = val
-        short = DIM_SUFFIXES.sub('', val)
+        short = _DIM_SUFFIXES.sub('', val)
         if short and short != val and len(short) >= 2:
             if short not in mapping:
                 mapping[short] = val
@@ -161,33 +188,64 @@ class NEREngine:
 
         return result
 
-    # ── 维度 ──
+    # ── 维度 (Trie 加速: O(N+M) 替代 O(N×M) 子串扫描) ──
+
+    @staticmethod
+    def _build_trie(dim_dict: dict) -> tuple:
+        """从 {name: canonical} 构建字典树，返回 (root, max_len)"""
+        root = {}
+        max_len = 0
+        for name, canonical in dim_dict.items():
+            node = root
+            for ch in name:
+                node = node.setdefault(ch, {})
+            node['$'] = canonical  # 终端标记
+            max_len = max(max_len, len(name))
+        return root, max_len
+
+    @staticmethod
+    def _scan_trie(query: str, trie_root: dict, field: str, max_len: int) -> list:
+        """在 query 中扫描 trie，返回 [(start, end, field, canonical), ...]"""
+        matches = []
+        n = len(query)
+        for i in range(n):
+            node = trie_root
+            j = i
+            while j < n and j - i < max_len:
+                ch = query[j]
+                if ch not in node:
+                    break
+                node = node[ch]
+                j += 1
+                if '$' in node:
+                    matches.append((i, j, field, node['$']))
+        return matches
 
     def _extract_filters(self, query: str, result: dict) -> str:
-        all_dims = []
-        for name, canonical in self.regions.items():
-            all_dims.append((name, 'region', canonical, len(name)))
-        for name, canonical in self.business_lines.items():
-            all_dims.append((name, 'business_line', canonical, len(name)))
+        # 构建 trie (使用缓存)
+        if not hasattr(self, '_region_trie'):
+            self._region_trie, self._region_max = self._build_trie(self.regions)
+            self._biz_trie, self._biz_max = self._build_trie(self.business_lines)
 
-        all_dims.sort(key=lambda x: -x[3])  # 按长度降序
+        # 一次扫描: 区域 + 业务线
+        raw_matches = []
+        raw_matches.extend(self._scan_trie(query, self._region_trie, 'region', self._region_max))
+        raw_matches.extend(self._scan_trie(query, self._biz_trie, 'business_line', self._biz_max))
+
+        # 按长度降序 + 去重叠 (优先更长匹配)
+        raw_matches.sort(key=lambda x: -(x[1] - x[0]))
 
         matched_positions = []
-        for name, field, canonical, _ in all_dims:
-            pos = 0
-            while True:
-                idx = query.find(name, pos)
-                if idx == -1:
-                    break
-                overlaps = any(start <= idx < end or start < idx + len(name) <= end
-                               for start, end in matched_positions)
-                if not overlaps:
-                    result["filters"].append({
-                        "field": field, "value": canonical,
-                        "operator": "=", "raw": name,
-                    })
-                    matched_positions.append((idx, idx + len(name)))
-                pos = idx + 1
+        for start, end, field, canonical in raw_matches:
+            overlaps = any(
+                start < e and s < end for s, e in matched_positions
+            )
+            if not overlaps:
+                result["filters"].append({
+                    "field": field, "value": canonical,
+                    "operator": "=", "raw": query[start:end],
+                })
+                matched_positions.append((start, end))
 
         if matched_positions:
             matched_positions.sort()
@@ -205,18 +263,18 @@ class NEREngine:
     # ── 分组 ──
 
     def _extract_group_by(self, query: str, result: dict) -> str:
-        for pattern, dim in GROUP_PATTERNS:
-            m = re.search(pattern, query)
+        for pattern, dim in _GROUP_PATTERNS:
+            m = pattern.search(query)
             if m:
                 result["group_by"] = dim
-                return re.sub(pattern, '', query)
+                return pattern.sub('', query)
         return query
 
     # ── 意图 ──
 
     def _extract_intent(self, query: str, result: dict) -> str:
-        for pattern, intent, _ in sorted(INTENT_PATTERNS, key=lambda x: -x[2]):
-            if re.search(pattern, query):
+        for pattern, intent, _ in sorted(_INTENT_PATTERNS, key=lambda x: -x[2]):
+            if pattern.search(query):
                 result["intent"] = intent
                 return query
         return query
@@ -224,12 +282,12 @@ class NEREngine:
     # ── 排序 ──
 
     def _extract_order(self, query: str, result: dict) -> str:
-        for p in ORDER_DESC_PATTERNS:
-            if re.search(p, query):
+        for p in _ORDER_DESC_PATTERNS:
+            if p.search(query):
                 result["order"] = "desc"
                 break
-        for p in ORDER_ASC_PATTERNS:
-            if re.search(p, query):
+        for p in _ORDER_ASC_PATTERNS:
+            if p.search(query):
                 result["order"] = "asc"
                 break
         if result["intent"] == "ranking" and result["order"] is None:
@@ -239,7 +297,7 @@ class NEREngine:
     # ── Top-N ──
 
     def _extract_top_n(self, query: str, result: dict) -> str:
-        m = TOP_N_PATTERN.search(query)
+        m = _TOP_N_PATTERN.search(query)
         if m:
             n = int(m.group(1))
             if 1 <= n <= 100:
@@ -247,17 +305,15 @@ class NEREngine:
                 result["intent"] = "ranking"
                 if result["order"] is None:
                     result["order"] = "desc"
-                query = TOP_N_PATTERN.sub('', query)
+                query = _TOP_N_PATTERN.sub('', query)
         return query
 
     # ── 清洗 ──
 
     @staticmethod
     def _clean_query(query: str) -> str:
-        noise = r'(?:的|了|吗|呢|吧|啊|呀|怎么样|如何|是什么|是多少|请问|帮我|查一下|查询|看看|能不能)'
-        cleaned = re.sub(noise, '', query)
-        suffixes = r'(?:情况|状况|数据|信息|统计|汇总|明细|列表)'
-        cleaned = re.sub(suffixes, '', cleaned)
+        cleaned = _NOISE_PATTERN.sub('', query)
+        cleaned = _SUFFIX_PATTERN.sub('', cleaned)
         cleaned = cleaned.replace('板块', '')
         cleaned = ' '.join(cleaned.split())
         return cleaned
