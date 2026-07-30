@@ -21,7 +21,7 @@ export default function DashboardPage() {
 
   const loadDashboard = async () => {
     try {
-      const { data: d } = await client.get('/chat/dashboard');
+      const { data: d } = await client.get('/dashboard');
       setData(d);
     } catch (e) {
       // Try individual queries
