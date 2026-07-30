@@ -46,24 +46,14 @@ class ReportAgent(BaseAgent):
         })
 
     async def _execute_all(self, ctx: AgentContext, plan: list[dict]) -> list[dict]:
-        """并行执行所有子查询"""
-        orchestrator = AgentOrchestrator()
-
-        # 注册需要的 Agent
+        """并行执行所有子查询 (asyncio.gather)"""
         from .intent_agent import IntentAgent
         from .sql_agent import SQLAgent
         from .execute_agent import ExecuteAgent
         from .interpret_agent import InterpretAgent
 
-        orchestrator.register(IntentAgent())
-        orchestrator.register(SQLAgent())
-        orchestrator.register(ExecuteAgent())
-        orchestrator.register(InterpretAgent())
-
-        results = []
-
-        # 逐个执行 (保持有序以便报告组装)
-        for item in plan:
+        async def _run_one(item: dict) -> dict:
+            """执行单个子查询: Intent → SQL → Execute → Interpret"""
             q = item["query"]
             sub_ctx = AgentContext(
                 query=q,
@@ -73,26 +63,28 @@ class ReportAgent(BaseAgent):
                 history=ctx.history.copy(),
             )
 
+            # 每个子查询需要独立的 Agent 实例 (避免状态污染)
+            intent = IntentAgent()
+            sql_agent = SQLAgent()
+            execute = ExecuteAgent()
+            interpret = InterpretAgent()
+
             try:
-                # Intent → SQL → Execute → Interpret
-                intent_r = await orchestrator.get("intent")._timed_run(sub_ctx)
+                intent_r = await intent._timed_run(sub_ctx)
                 if not intent_r.success:
-                    results.append({"query": q, "error": intent_r.error})
-                    continue
+                    return {"query": q, "error": intent_r.error, "section": item.get("section", "")}
 
-                sql_r = await orchestrator.get("sql")._timed_run(sub_ctx)
+                sql_r = await sql_agent._timed_run(sub_ctx)
                 if not sql_r.success:
-                    results.append({"query": q, "error": sql_r.error})
-                    continue
+                    return {"query": q, "error": sql_r.error, "section": item.get("section", "")}
 
-                exec_r = await orchestrator.get("execute")._timed_run(sub_ctx)
+                exec_r = await execute._timed_run(sub_ctx)
                 if not exec_r.success:
-                    results.append({"query": q, "error": exec_r.error})
-                    continue
+                    return {"query": q, "error": exec_r.error, "section": item.get("section", "")}
 
-                interp_r = await orchestrator.get("interpret")._timed_run(sub_ctx)
+                await interpret._timed_run(sub_ctx)
 
-                results.append({
+                return {
                     "query": q,
                     "metric": item.get("metric", ""),
                     "section": item.get("section", ""),
@@ -101,13 +93,14 @@ class ReportAgent(BaseAgent):
                     "interpretation": sub_ctx.interpretation or "",
                     "time_intel": sub_ctx.time_intel or {},
                     "stages": sub_ctx.stages,
-                })
-
+                }
             except Exception as e:
                 logger.warning("Sub-query failed [%s]: %s", q, e)
-                results.append({"query": q, "error": str(e)})
+                return {"query": q, "error": str(e), "section": item.get("section", "")}
 
-        return results
+        # 并行执行所有子查询
+        results = await asyncio.gather(*[_run_one(item) for item in plan])
+        return list(results)
 
     def _build_report(self, ctx: AgentContext, sections: dict, results: list[dict]) -> str:
         """构建 Markdown 格式报告"""
