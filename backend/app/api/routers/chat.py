@@ -7,9 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...core.deps import get_current_user
 from ...core.security import build_data_scope_sql, get_data_scope
+from ...core.logging import get_logger
 from ...database import DatabaseConnector
 from ...schemas import ChatRequest
 
+logger = get_logger(__name__)
 router = APIRouter(prefix="/api", tags=["对话"])
 
 # ── 查询历史 ──
@@ -255,7 +257,18 @@ def _handle_sse(query: str, db, user: dict):
 # ── 查询处理 ──
 
 def _handle_query(query: str, db: DatabaseConnector, user: dict) -> dict:
-    """完整的 NL2SQL 查询流水线 — 支持 Agent 模式"""
+    """完整的 NL2SQL 查询流水线 — 支持 Agent 模式 + 多轮对话"""
+
+    # 多轮对话: 检测追问并注入上下文
+    original_query = query
+    from ...engine.conversation_memory import ConversationMemory
+    memory = ConversationMemory(user.get("user_id", 0))
+    followup = memory.detect_followup(query)
+
+    if followup:
+        logger.info("Follow-up detected: type=%s, enhanced=%s",
+                     followup["followup_type"], followup.get("enhanced_query"))
+        query = followup.get("enhanced_query", query)
 
     # 检测是否为报告请求
     is_report = any(kw in query for kw in ["生成报告", "分析报告", "经营分析", "销售分析", "区域分析", "商机分析"])
@@ -269,11 +282,17 @@ def _handle_query(query: str, db: DatabaseConnector, user: dict) -> dict:
         pass
 
     # Agent 模式: 报告 / 分析类 / LLM 可用时
+    result = None
     if is_report and llm:
-        return _handle_agent_query(query, db, user, llm, is_report)
+        result = _handle_agent_query(query, db, user, llm, is_report)
+    else:
+        result = _handle_pipeline_query(query, db, user, llm)
 
-    # Pipeline 模式 (原有逻辑)
-    return _handle_pipeline_query(query, db, user, llm)
+    # 保存对话记忆
+    if result and result.get("type") not in ("error", "clarify", "pending"):
+        memory.add_turn(original_query, result)
+
+    return result
 
 
 def _handle_pipeline_query(query: str, db: DatabaseConnector, user: dict, llm=None) -> dict:
@@ -338,8 +357,6 @@ def _handle_agent_query(query: str, db: DatabaseConnector, user: dict, llm, is_r
         result["_query"] = query
         return result
     except Exception as e:
-        import logging
-        logger = logging.getLogger('smart_query.backend.app.api.routers.chat')
         logger.warning("Agent mode failed (%s), falling back to Pipeline", e)
         return _handle_pipeline_query(query, db, user, llm)
 
