@@ -1,114 +1,90 @@
-# 智慧问数系统 v2.0
+# 智慧问数系统 — FDE
 
-企业级 NL2SQL 智能数据查询平台 — 自然语言 → SQL → 数据结果。
+企业级 NL2SQL 智能数据查询框架（Framework Development Edition）。
+
+用自然语言查询数据库，零代码接入新项目。
 
 ## 特性
 
-- 🔍 **自然语言查询**: 用中文直接查询数据库，自动转 SQL
-- 🔐 **三级 RBAC**: 管理员(全部数据) / 领导(部门数据) / 员工(个人数据)
-- ⏰ **智能时间解析**: 支持 Q3、本月、同比、环比、YTD 等 20+ 种时间表达
-- 🏷️ **NER 实体提取**: 自动识别区域、业务线、排名等筛选条件
-- 📊 **多快照聚合**: UNION ALL 跨月/跨季数据自动合并
-- 🎨 **过程透明**: 展示 NER → 时间解析 → 指标匹配 → SQL → 执行的每一步
+- 自然语言查询：用中文直接查数据库，自动转 SQL
+- 三级权限：管理员 / 领导 / 员工，数据行级隔离
+- Excel 导入：上传即用，自动建表 + 生成指标
+- 过程透明：展示从自然语言到 SQL 到结果的每一步
+- LLM 可选：无 API Key 时基于规则模板运行，接入后自动增强
+- 开箱即用：空白数据库初始化，3 步接入新项目
 
 ## 快速开始
 
 ```bash
 # 1. 安装依赖
-cd smart-query-v2
 pip install -r backend/requirements.txt
 
-# 2. 初始化数据库
-python3 backend/db/init_db.py
+# 2. 初始化空白数据库
+python backend/db/init_db.py
 
 # 3. 启动服务
-python3 -m uvicorn backend.app.main:app --host 127.0.0.1 --port 5000 --reload
+python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 5000
 
-# 4. 打开浏览器访问
+# 4. 浏览器访问
 # http://127.0.0.1:5000
 ```
 
-## 测试账号
+## 新项目接入
 
-| 角色 | 用户名 | 密码 | 数据范围 |
-|------|--------|------|---------|
-| 🔧 管理员 | admin | admin123 | 全部数据 + 管理面板 |
-| 📊 领导 | leader | leader123 | 数字政务事业部 (全部区域) |
-| 👤 员工 | employee | emp123 | 数字政务事业部 - 南宁市 |
-| 👤 员工2 | emp_liuzhou | emp123 | 数字政务事业部 - 柳州市 |
-| 📊 领导2 | leader_xinchuang | leader123 | 信创事业部 |
-| 👤 员工3 | emp_xinchuang | emp123 | 信创事业部 - 南宁市 |
+```
+1. python backend/db/init_db.py     → 空白数据库
+2. 浏览器上传 Excel                  → 自动建表 + 生成指标
+3. 配置 enterprise_kb.yaml           → 添加业务同义词
+4. 开始查询
+```
+
+## 默认账号
+
+| 角色 | 用户名 | 密码 |
+|------|--------|------|
+| 管理员 | admin | admin123 |
+
+> 初始化后仅有 admin 账号，其他用户通过管理面板创建。
+
+## 技术栈
+
+| 层 | 技术 |
+|----|------|
+| 后端 | Python / FastAPI |
+| 数据库 | SQLite（默认）/ PostgreSQL（可选） |
+| 前端 | React 18 + TypeScript + Ant Design 5 |
+| LLM | DeepSeek（可选） |
+| 向量 | ChromaDB（可选） |
+| 缓存 | 内存 LRU / Redis（可选） |
+| 部署 | Docker / docker-compose |
 
 ## API 文档
 
 启动后访问: http://127.0.0.1:5000/docs
 
-### 主要端点
+## 运行测试
 
-| 方法 | 路径 | 说明 | 权限 |
-|------|------|------|------|
-| POST | /api/auth/login | 登录 | 公开 |
-| GET | /api/auth/me | 当前用户信息 | 登录 |
-| POST | /api/chat | NL2SQL 查询 | 登录 |
-| GET | /api/metrics | 指标列表 | 登录 |
-| GET | /api/snapshots | 数据快照 | 登录 |
-| POST | /api/import | Excel 导入 | admin/leader |
-| GET | /api/admin/users | 用户管理 | admin |
-| GET | /api/admin/logs | 查询日志 | admin |
-| POST | /api/feedback | 提交反馈 | 登录 |
-
-## 查询示例
-
-```
-# 时间聚合
-Q3 年度累计中标总额
-
-# 时间 + 筛选
-本月 南宁市 本期签约额
-
-# 排名
-Top 10 各地市中标额
-
-# 同比分析
-同比 商机签约转化率
-
-# 命令
-/list           → 查看所有指标
-/snapshots      → 查看数据快照
-/db             → 数据库状态
-/help           → 使用帮助
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest backend/tests/ -v
 ```
 
 ## 项目结构
 
 ```
-smart-query-v2/
+smart-query-fde/
 ├── backend/app/
-│   ├── core/          # 安全、认证、依赖注入
-│   ├── engine/        # NL2SQL 引擎 (NER/时间/SQL过滤)
-│   ├── semantic/      # 语义层 (指标加载/匹配)
+│   ├── agents/        # 多 Agent 智能体
+│   ├── engine/        # NL2SQL 流水线
+│   ├── semantic/      # 语义层 + 知识库
+│   ├── governance/    # 五层治理
 │   ├── llm/           # LLM 抽象层
-│   ├── governance/    # 查询治理
 │   ├── onboarding/    # 数据接入
-│   └── api/routers/   # FastAPI 路由
-├── frontend/          # 纯 HTML/CSS/JS SPA
+│   └── api/routers/   # REST API
+├── frontend/          # React SPA
 ├── config.yaml        # 全局配置
-└── backend/db/        # 数据库初始化
+└── docker-compose.yml
 ```
 
-## LLM 集成 (可选)
+## 许可证
 
-设置环境变量以启用 DeepSeek 智能 SQL 生成:
-
-```bash
-export DEEPSEEK_API_KEY=sk-xxx
-```
-
-未设置时系统使用预定义 SQL 模板，不影响基本查询功能。
-
-## 运行测试
-
-```bash
-cd smart-query-v2
-python3 -m pytest backend/tests/ -v
-```
+MIT
