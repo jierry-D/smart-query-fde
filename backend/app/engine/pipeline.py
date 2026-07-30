@@ -230,7 +230,10 @@ class NL2SQLPipeline:
         kb_synonyms = getattr(ctx, 'kb_synonyms', [])
         kb_boosted = bool(kb_synonyms) and best["score"] >= 0.7
 
-        if best["score"] != 1.0 and not has_ner and not kb_boosted:
+        # 放宽模糊匹配: 有时间解析 或 非默认意图(ranking/trend/distribution)时降低门槛
+        has_time = ctx.period_label is not None
+        has_strong_intent = ctx.entities.get("intent", "aggregate") not in ("aggregate",)
+        if best["score"] != 1.0 and not has_ner and not kb_boosted and not has_time and not has_strong_intent:
             ctx.add_stage("指标匹配", "error", (time.perf_counter() - t3) * 1000,
                           f"模糊匹配: {best['metric']['name']} (score={best['score']:.2f})")
             ctx._suggestions = [r["metric"]["name"] for r in results]

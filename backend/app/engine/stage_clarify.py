@@ -39,10 +39,11 @@ def check_clarification(ctx) -> dict | None:
         completeness["has_time"] = True
         completeness["score"] = min(1.0, completeness.get("score", 0) + 0.3)
 
-    query_len = len(ctx.query.strip())
+    query_len = len(ctx.cleaned_query.strip())
     has_time = completeness.get("has_time", False)
     has_dimension = completeness.get("has_dimension", False)
     intent = entities.get("intent", "aggregate")
+    has_metric = completeness.get("has_metric", False)
 
     # 场景: KB 同义词成功解析 → 跳过
     if kb_synonyms:
@@ -56,10 +57,10 @@ def check_clarification(ctx) -> dict | None:
                       f"意图={intent}, 默认最新数据")
         return None
 
-    # 场景1: 查询太短
-    if query_len < 4 and not kb_synonyms:
+    # 场景1: 查询太短或无实质内容
+    if (query_len < 4 and not has_metric) or query_len <= 2:
         ctx.add_stage("反问澄清", "done", (time.perf_counter() - t1) * 1000,
-                      "查询太短, 引导使用命令")
+                      "查询太短, 引导使用命令" if query_len <= 2 else "无实质指标内容")
         return {
             "type": "clarify",
             "question": "请问您想查什么数据？",
