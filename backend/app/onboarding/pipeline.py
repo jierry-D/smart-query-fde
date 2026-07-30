@@ -529,7 +529,6 @@ class OnboardingReviewer:
 
     def submit(self, config: dict, quality_score: int) -> int:
         """提交配置到审核队列"""
-        import json
         self.db.execute_write(
             "INSERT INTO onboarding_queue (table_name, config_json, quality_score, status) "
             "VALUES (?, ?, ?, 'pending')",
@@ -618,7 +617,6 @@ class SemanticRegistrar:
         return results
 
     def _register_schema(self, table_name: str, fields: list):
-        import json
         col_names = [f["field_name"] for f in fields]
 
         try:
@@ -775,7 +773,6 @@ class OnboardingPipeline:
         if not approved:
             return {"status": "error", "message": "审核项不存在"}
 
-        import json
         config = json.loads(approved["config_json"])
         reg = self.registrar.register(config)
         return {"status": "ok", "table": config["table_name"], "registration": reg}

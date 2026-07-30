@@ -1,6 +1,8 @@
 """NL2SQL 查询流水线编排器 — Stage 0-7"""
 
+import asyncio
 import concurrent.futures
+import re
 import time
 
 from ..core.logging import get_logger
@@ -294,7 +296,6 @@ class NL2SQLPipeline:
                     sql = sql.replace("WHERE", f"WHERE ({cond}) AND ", 1)
                 else:
                     # 在 FROM 子句之后插入 WHERE
-                    import re
                     sql = re.sub(
                         r'(FROM\s+"?\w+"?\s*)', f'\\1WHERE ({cond}) ', sql,
                         count=1, flags=re.IGNORECASE
@@ -306,8 +307,6 @@ class NL2SQLPipeline:
 
     def _try_llm_sql(self, ctx: PipelineContext, base_template: str | None = None) -> str | None:
         """使用 LLM 生成/优化 SQL (同步包装)"""
-        import asyncio
-        import concurrent.futures
 
         from ..llm.prompts import PromptManager
 
@@ -341,7 +340,6 @@ class NL2SQLPipeline:
             return None
 
         # 提取SQL (去除markdown包裹)
-        import re
         m = re.search(r'```(?:sql)?\s*\n?(SELECT[\s\S]*?)\n?```', result, re.IGNORECASE)
         if m:
             return m.group(1).strip()
@@ -353,7 +351,6 @@ class NL2SQLPipeline:
     @staticmethod
     def _run_async(coro):
         """在线程池中运行异步协程, 兼容同步调用场景"""
-        import asyncio
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -402,7 +399,6 @@ class NL2SQLPipeline:
     def _stage6_execute(self, ctx: PipelineContext):
         t6 = time.perf_counter()
         from .sql_filter import inject_snapshot_where
-        import re
 
         sql = ctx.governance_result["final_sql"]
 
@@ -546,7 +542,6 @@ def _auto_mom(db, metric: dict, current_value, snapshot_ids: list = None) -> dic
         if not table:
             return None
         # 提取基名 (去掉 _2026_07 后缀)
-        import re
         base = re.sub(r'_\d{4}_\d{2}$', '', table)
         # 找同基名的所有快照
         snaps = db.execute(
@@ -600,7 +595,6 @@ def _suggest_drilldown(metric_name: str, rows: list) -> list[dict] | None:
 
 def _build_union(base_sql: str, snapshot_ids: list, fmt: str) -> str:
         from .sql_filter import inject_snapshot_where
-        import re
 
         subs = []
         for sid in snapshot_ids:

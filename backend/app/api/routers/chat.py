@@ -367,7 +367,6 @@ def _handle_agent_query(query: str, db: DatabaseConnector, user: dict, llm, is_r
             loop.close()
         else:
             # 已有运行中的事件循环 (async context)
-            import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor() as pool:
                 result = pool.submit(asyncio.run, _run()).result(timeout=60)
         _log_query(db, user, query, result)
@@ -381,7 +380,6 @@ def _handle_agent_query(query: str, db: DatabaseConnector, user: dict, llm, is_r
 def _log_query(db, user: dict, query: str, result: dict):
     """记录查询日志 (非阻塞)"""
     try:
-        import json
         db.log_query(
             user_id=user["user_id"], username=user["username"],
             role=user["role"], original_query=query,

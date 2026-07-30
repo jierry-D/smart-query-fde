@@ -1,5 +1,6 @@
 """JOIN 路径规划器 — 自动检测表关系 + 生成跨表SQL"""
 
+import re
 from collections import deque
 
 from ..core.logging import get_logger
@@ -44,7 +45,6 @@ class JoinGraph:
 
         # 同数据源快照之间的关联 (同base名不同期间的表通过快照关联)
         base_tables = {}
-        import re
         for t in user_tables:
             base = re.sub(r'_\d{4}_\d{2}$', '', t)
             base_tables.setdefault(base, []).append(t)

@@ -12,6 +12,7 @@ NER 引擎 — 纯规则自然语言实体提取
 """
 
 import re
+import threading
 import time
 
 from ..core.logging import get_logger
@@ -81,7 +82,6 @@ class NEREngine:
         # 缓存未命中 → 加载 + 写入缓存 (线程安全)
         self._load_dimensions()
         if _DIM_CACHE_LOCK is None:
-            import threading
             _DIM_CACHE_LOCK = threading.Lock()
         with _DIM_CACHE_LOCK:
             _DIM_CACHE["regions"] = self.regions

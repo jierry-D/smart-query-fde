@@ -1,5 +1,6 @@
 """文件导入逻辑 — 从 MVP 迁移并增强"""
 
+import os
 import re
 from datetime import date
 from pathlib import Path
@@ -56,7 +57,6 @@ def import_excel(filepath: str, db, user: dict) -> dict:
         base_name = _safe_table_name(sheet_name)
         # 如果sheet名是纯日期格式，用文件名+sheet名
         if re.match(r'^\d{4}[-_]\d{2}$', str(sheet_name)):
-            import os
             file_stem = os.path.splitext(os.path.basename(filepath))[0]
             file_prefix = _safe_table_name(file_stem)[:30]
             table_name = f"{file_prefix}_{base_name}"[:64]

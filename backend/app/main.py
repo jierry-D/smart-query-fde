@@ -1,8 +1,10 @@
 """FastAPI 应用工厂 — 主入口"""
 
+import sqlite3
 import sys
 import webbrowser
 import threading
+from datetime import date
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -115,7 +117,6 @@ def create_app() -> FastAPI:
     @app.get("/api/status")
     def get_status():
         """系统状态（完整信息，用于仪表盘）"""
-        from datetime import date
         from .database import DatabaseConnector
         db = DatabaseConnector()
 
@@ -218,7 +219,6 @@ def main():
         from .database import DatabaseConnector
         db = DatabaseConnector(str(db_path))
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        import sqlite3
         conn = sqlite3.connect(str(db_path))
         conn.execute("""CREATE TABLE IF NOT EXISTS data_snapshots (
             snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,

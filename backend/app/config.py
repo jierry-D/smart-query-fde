@@ -182,7 +182,6 @@ class Config:
     def jwt_secret_key(self) -> str:
         key = self._get("jwt", "secret_key", default="smart-query-dev-secret-change-in-production")
         if "change-in-production" in key:
-            import os
             if os.environ.get("SQ_ENV", "dev") != "dev":
                 raise ValueError("JWT_SECRET_KEY 未设置! 生产环境通过环境变量 JWT_SECRET_KEY 设置")
         return key

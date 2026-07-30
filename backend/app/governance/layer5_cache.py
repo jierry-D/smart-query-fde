@@ -116,9 +116,7 @@ class RedisCache:
 
     @staticmethod
     def _normalize(sql: str) -> str:
-        import re
-        normalized = sql.strip()
-        normalized = re.sub(r'\s+', ' ', normalized)
+        normalized = _RE_WHITESPACE.sub(' ', sql.strip())
         normalized = normalized.lower()
         return f"sq:cache:{hashlib.md5(normalized.encode()).hexdigest()}"
 

@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import statistics
 import time
 from typing import Any
 
@@ -111,7 +112,6 @@ class InterpretAgent(BaseAgent):
         if len(values) < 3:
             return None
 
-        import statistics
         try:
             mean = statistics.mean(values)
             stdev = statistics.stdev(values) if len(values) > 1 else 0
