@@ -1,11 +1,21 @@
-"""InterpretAgent — 自然语言结果解读（趋势/对比/归因/异常检测）"""
+"""InterpretAgent — 自然语言结果解读（趋势/对比/归因/异常检测 + LLM缓存）"""
 
+import asyncio
+import hashlib
+import json
+import time
 from typing import Any
 
 from .base import BaseAgent, AgentContext, AgentResult
 from ..core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# LLM 解读缓存 (key → (text, timestamp))
+_interpret_cache: dict[str, tuple[str, float]] = {}
+_INTERPRET_CACHE_TTL = 300  # 5 分钟
+_INTERPRET_CACHE_MAX = 100
+_INTERPRET_TIMEOUT = 5.0  # LLM 解读超时 (秒, 比 SQL 生成的 30s 短)
 
 
 class InterpretAgent(BaseAgent):
@@ -144,21 +154,44 @@ class InterpretAgent(BaseAgent):
         )
 
     async def _llm_interpret(self, ctx: AgentContext, rows: list, metric: dict) -> str | None:
-        """LLM 增强解读"""
+        """LLM 增强解读 (缓存 + 短超时)"""
         try:
+            # 缓存键: (metric_name, query, data_summary)
+            data_summary = self._summarize_data(rows, metric)
+            cache_key = hashlib.md5(
+                f"{metric.get('name','')}|{ctx.query}|{data_summary}".encode()
+            ).hexdigest()
+
+            # 命中缓存
+            global _interpret_cache
+            if cache_key in _interpret_cache:
+                text, ts = _interpret_cache[cache_key]
+                if time.time() - ts < _INTERPRET_CACHE_TTL:
+                    return text
+
             from ..llm.prompts import PromptManager
             pm = PromptManager()
-
-            data_summary = self._summarize_data(rows, metric)
             prompt = pm.render("result_interpreter",
                 metric_name=metric.get("name", ""),
                 data=data_summary,
                 query=ctx.query,
             )
 
-            response = await ctx.llm.chat([{"role": "user", "content": prompt}])
+            # 短超时 LLM 调用
+            response = await asyncio.wait_for(
+                ctx.llm.chat([{"role": "user", "content": prompt}]),
+                timeout=_INTERPRET_TIMEOUT,
+            )
             if response and len(response) > 5:
-                return f"💡 **AI 解读**：{response.strip()}"
+                text = f"💡 **AI 解读**：{response.strip()}"
+                # 写入缓存 (LRU 淘汰)
+                if len(_interpret_cache) >= _INTERPRET_CACHE_MAX:
+                    oldest = min(_interpret_cache, key=lambda k: _interpret_cache[k][1])
+                    del _interpret_cache[oldest]
+                _interpret_cache[cache_key] = (text, time.time())
+                return text
+        except asyncio.TimeoutError:
+            logger.debug("LLM interpret timeout (%.1fs)", _INTERPRET_TIMEOUT)
         except Exception as e:
             logger.debug("LLM interpret failed: %s", e)
         return None
