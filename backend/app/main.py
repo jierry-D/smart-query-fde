@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse
 from .config import config
 from .core.logging import init_logging, get_logger
 from .core.rate_limiter import check_rate_limit
+from .core.metrics import metrics_middleware, metrics_endpoint
 
 logger = get_logger(__name__)
 
@@ -35,14 +36,24 @@ def create_app() -> FastAPI:
 
     class RateLimitMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next):
-            # 跳过静态文件/文档/本地请求
-            if request.url.path.startswith(("/static", "/docs", "/openapi.json")):
+            # 跳过静态文件/文档/健康检查
+            if request.url.path.startswith(("/static", "/docs", "/openapi.json", "/api/health", "/metrics")):
                 return await call_next(request)
             client_ip = request.client.host if request.client else "127.0.0.1"
             if client_ip in ("127.0.0.1", "localhost", "::1", "testclient"):
                 return await call_next(request)
+
+            # 从 JWT token 解码用户 ID (简约版——不依赖完整依赖注入)
             user_id = 0
-            # 尝试从 Authorization header 解码用户ID (简化)
+            auth_header = request.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                try:
+                    from .core.security import decode_token
+                    payload = decode_token(auth_header[7:])
+                    user_id = payload.get("user_id", 0)
+                except Exception:
+                    pass  # token 无效时使用 IP 限流兜底
+
             result = check_rate_limit(user_id, client_ip)
             if not result["allowed"]:
                 return JSONResponse(
@@ -56,6 +67,12 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RateLimitMiddleware)
 
+    # Prometheus 指标中间件
+    app.middleware("http")(metrics_middleware)
+
+    # 注册 /metrics 端点
+    metrics_endpoint(app)
+
     # CORS (从配置读取)
     cors_origins = getattr(config, 'cors_origins', ["*"])
     app.add_middleware(
@@ -65,6 +82,19 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # 安全响应头中间件
+    class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+        async def dispatch(self, request: Request, call_next):
+            response = await call_next(request)
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-XSS-Protection"] = "1; mode=block"
+            if request.url.scheme == "https":
+                response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+            return response
+
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # 注册路由
     from .api.routers import auth, chat, metrics, snapshots, import_route, admin, feedback
@@ -84,7 +114,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/status")
     def get_status():
-        """系统状态"""
+        """系统状态（完整信息，用于仪表盘）"""
         from datetime import date
         from .database import DatabaseConnector
         db = DatabaseConnector()
@@ -104,26 +134,54 @@ def create_app() -> FastAPI:
             )),
             "users": len(db.get_all_users()),
             "rate_limit": {
-                "user_per_minute": config._get("rate_limit", "user_per_minute", default=30),
-                "ip_per_minute": config._get("rate_limit", "ip_per_minute", default=100),
+                "user_per_minute": config.rate_limit_user_per_minute,
+                "ip_per_minute": config.rate_limit_ip_per_minute,
             },
-            "cache_type": config._get("cache", "type", default="memory"),
+            "cache_type": config.cache_type,
             "db_type": config.db_type,
         }
 
-    @app.get("/")
-    def index():
-        # 优先: frontend/index.html
-        index_path = _PROJECT_ROOT.parent / "frontend" / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        # 备选: frontend/dist/index.html (构建后)
-        dist_path = _PROJECT_ROOT.parent / "frontend" / "dist" / "index.html"
-        if dist_path.exists():
-            return FileResponse(str(dist_path))
-        # 开发模式下返回 API 信息
+    @app.get("/api/health")
+    def health_check():
+        """轻量健康检查 — 供 Docker / K8s liveness probe 使用"""
+        from .database import DatabaseConnector
+        try:
+            db = DatabaseConnector()
+            db.execute("SELECT 1")
+            return {"status": "ok", "db": "connected"}
+        except Exception as e:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                status_code=503,
+                content={"status": "unhealthy", "db": str(e)},
+            )
+
+    @app.get("/{path:path}")
+    async def serve_frontend(path: str):
+        """服务前端 — React build > legacy SPA > API fallback"""
+        # 跳过 API 路由
+        if path.startswith("api/"):
+            from fastapi.responses import JSONResponse
+            return JSONResponse({"detail": "Not Found"}, status_code=404)
+
+        # 1. React 生产构建: frontend/dist/
+        dist_dir = _PROJECT_ROOT.parent / "frontend" / "dist"
+        if dist_dir.exists():
+            file_path = dist_dir / path if path else dist_dir / "index.html"
+            if file_path.exists() and file_path.is_file():
+                return FileResponse(str(file_path))
+            return FileResponse(str(dist_dir / "index.html"))
+
+        # 2. Legacy SPA: frontend-legacy/
+        legacy_dir = _PROJECT_ROOT.parent / "frontend-legacy"
+        if legacy_dir.exists() and (not path or path == "index.html"):
+            index = legacy_dir / "index.html"
+            if index.exists():
+                return FileResponse(str(index))
+
+        # 3. API 信息 (开发模式)
         return {
-            "message": "智慧问数系统 v2.0 API",
+            "message": "智慧问数系统 v2.1 API",
             "docs": "/docs",
             "login": "/api/auth/login",
             "test_users": {
@@ -131,6 +189,7 @@ def create_app() -> FastAPI:
                 "leader": "leader/leader123",
                 "employee": "employee/emp123",
             },
+            "frontend": "React dev: cd frontend && npm run dev (port 3000)",
         }
 
     return app

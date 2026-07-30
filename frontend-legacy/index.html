@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智慧问数系统 v2.0</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <div class="login-header">
+      <div class="login-icon">🔍</div>
+      <h1>智慧问数系统</h1>
+      <p>企业级 NL2SQL 智能数据查询平台</p>
+    </div>
+    <div class="login-form">
+      <div class="input-group">
+        <label>用户名</label>
+        <input type="text" id="loginUser" placeholder="admin / leader / employee" autocomplete="off">
+      </div>
+      <div class="input-group">
+        <label>密码</label>
+        <input type="password" id="loginPass" placeholder="admin123 / leader123 / emp123">
+      </div>
+      <div id="loginError" class="login-error" style="display:none"></div>
+      <button id="loginBtn" class="btn-login" onclick="doLogin()">登 录</button>
+    </div>
+    <div class="login-accounts">
+      <div class="account-row"><span class="role-tag admin">管理员</span><code>admin</code> / <code>admin123</code><span class="hint">全部数据</span></div>
+      <div class="account-row"><span class="role-tag leader">领导</span><code>leader</code> / <code>leader123</code><span class="hint">部门数据</span></div>
+      <div class="account-row"><span class="role-tag employee">员工</span><code>employee</code> / <code>emp123</code><span class="hint">个人数据</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="appScreen" class="app-screen" style="display:none">
+  <!-- Top Bar -->
+  <header class="topbar">
+    <div class="topbar-brand">🔍 智慧问数系统 <span class="version-tag">v2.0</span></div>
+    <div class="topbar-center" id="statusInfo">
+      <span>📅 --</span>
+      <span>📦 -- 快照</span>
+      <span>📋 -- 指标</span>
+    </div>
+    <div class="topbar-right">
+      <span id="userDisplay" class="user-display"></span>
+      <button onclick="doLogout()" class="btn-text">退出</button>
+    </div>
+  </header>
+
+  <!-- Main Layout -->
+  <div class="main-body">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <nav class="side-nav">
+        <a onclick="showDashboard()" class="nav-item active" id="navDashboard">📊 经营仪表盘</a>
+        <a onclick="newChat()" class="nav-item" id="navChat">💬 智能问数</a>
+        <a onclick="showMetrics()" class="nav-item" id="navMetrics">📋 指标目录</a>
+        <a onclick="showSnapshots()" class="nav-item" id="navSnapshots">📦 数据管理</a>
+        <a id="navImport" onclick="showImport()" class="nav-item" style="display:none">📤 导入数据</a>
+        <a id="navAdmin" onclick="showAdmin()" class="nav-item" style="display:none">⚙️ 系统管理</a>
+      </nav>
+      <div class="side-footer">
+        <div id="dataScope" class="scope-info"></div>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <main class="content" id="mainContent">
+      <!-- Dashboard View -->
+      <div id="dashboardView" class="view active">
+        <div class="view-header"><h2>📊 经营仪表盘</h2><span id="dashboardPeriod" style="font-size:.8rem;color:var(--c-text-secondary)"></span></div>
+        <div class="view-body" id="dashboardContent">
+          <div class="loading-spinner"><div class="spinner"></div>加载仪表盘...</div>
+        </div>
+      </div>
+
+      <!-- Chat View -->
+      <div id="chatView" class="view">
+        <div class="chat-messages" id="chatMessages">
+          <div class="welcome-msg">
+            <div class="welcome-big">🔍</div>
+            <h2>欢迎使用智慧问数系统</h2>
+            <p>用自然语言查询企业数据 — 试试下面的例子</p>
+            <div class="quick-actions" id="quickActions">
+              <button onclick="quickQuery('Q3 年度累计中标总额')">Q3 年度累计中标总额</button>
+              <button onclick="quickQuery('本月 本期签约额')">本月 本期签约额</button>
+              <button onclick="quickQuery('南宁市 中标总额')">南宁市 中标总额</button>
+              <button onclick="quickQuery('Top 5 各地市中标额')">Top 5 各地市中标额</button>
+              <button onclick="quickQuery('同比 商机签约转化率')">同比 商机签约转化率</button>
+              <button onclick="quickQuery('逾期90天以上应收款')">逾期90天以上应收款</button>
+            </div>
+          </div>
+        </div>
+        <div class="chat-input-bar">
+          <button onclick="toggleHistory()" class="btn-text" style="font-size:1.1rem" title="查询历史">🕐</button>
+          <input type="text" id="queryInput" placeholder="输入自然语言查询..."
+                 autocomplete="off" onkeydown="if(event.key==='Enter')doQuery()">
+          <button onclick="doQuery()" class="btn-send">查询</button>
+        </div>
+        <div id="historyPanel" class="history-panel"></div>
+      </div>
+
+      <!-- Metrics View -->
+      <div id="metricsView" class="view">
+        <div class="view-header"><h2>📋 指标目录</h2></div>
+        <div id="metricsContent" class="view-body">加载中...</div>
+      </div>
+
+      <!-- Snapshots View -->
+      <div id="snapshotsView" class="view">
+        <div class="view-header"><h2>📦 数据管理</h2></div>
+        <div id="snapshotsContent" class="view-body">加载中...</div>
+      </div>
+
+      <!-- Import View -->
+      <div id="importView" class="view">
+        <div class="view-header"><h2>📤 导入数据</h2></div>
+        <div id="importContent" class="view-body">
+          <div class="upload-zone" id="uploadZone">
+            <div class="upload-icon">📁</div>
+            <p>拖拽 Excel 文件到这里，或点击选择文件</p>
+            <input type="file" id="fileInput" accept=".xlsx,.xls" hidden onchange="doImport(this)">
+            <button onclick="document.getElementById('fileInput').click()" class="btn-primary">选择 Excel 文件</button>
+          </div>
+          <div id="importResult"></div>
+        </div>
+      </div>
+
+      <!-- Admin View -->
+      <div id="adminView" class="view">
+        <div class="view-header"><h2>⚙️ 系统管理</h2></div>
+        <div class="admin-tabs">
+          <button class="admin-tab active" onclick="adminTab('users',this)">用户管理</button>
+          <button class="admin-tab" onclick="adminTab('logs',this)">查询日志</button>
+          <button class="admin-tab" onclick="adminTab('stats',this)">系统统计</button>
+          <button class="admin-tab" onclick="adminTab('db',this)">数据库</button>
+          <button class="admin-tab" onclick="adminTab('onboarding',this)">数据接入</button>
+          <button class="admin-tab" onclick="adminTab('suggestions',this)">改进建议</button>
+        </div>
+        <div id="adminContent" class="view-body">加载中...</div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/static/js/api.js"></script>
+  <script src="/static/js/chat.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>

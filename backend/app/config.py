@@ -79,7 +79,86 @@ class Config:
 
     @property
     def db_type(self) -> str:
+        env = os.environ.get("DATABASE_URL", "")
+        if env.startswith("postgres"):
+            return "postgresql"
         return self._get("database", "type", default="sqlite")
+
+    @property
+    def database_url(self) -> str:
+        """环境变量 DATABASE_URL 优先，否则从 YAML 构建"""
+        env = os.environ.get("DATABASE_URL", "")
+        if env:
+            return env
+        if self.db_type == "postgresql":
+            pg = self._get("database", "postgresql", default={})
+            return (
+                f"postgresql://{pg.get('user','smart_query')}:{pg.get('password','smart_query')}"
+                f"@{pg.get('host','localhost')}:{pg.get('port',5432)}/{pg.get('dbname','smart_query')}"
+            )
+        return self.db_path
+
+    @property
+    def pg_host(self) -> str:
+        return self._get("database", "postgresql", "host", default="localhost")
+
+    @property
+    def pg_port(self) -> int:
+        return self._get("database", "postgresql", "port", default=5432)
+
+    @property
+    def pg_dbname(self) -> str:
+        return self._get("database", "postgresql", "dbname", default="smart_query")
+
+    @property
+    def pg_user(self) -> str:
+        return self._get("database", "postgresql", "user", default="smart_query")
+
+    @property
+    def pg_password(self) -> str:
+        return self._get("database", "postgresql", "password", default="smart_query")
+
+    @property
+    def pg_pool_min(self) -> int:
+        return self._get("database", "postgresql", "pool_min", default=1)
+
+    @property
+    def pg_pool_max(self) -> int:
+        return self._get("database", "postgresql", "pool_max", default=10)
+
+    # ── 缓存 ──
+
+    @property
+    def cache_type(self) -> str:
+        return self._get("cache", "type", default="memory")
+
+    @property
+    def cache_redis_url(self) -> str:
+        return self._get("cache", "redis_url", default="redis://localhost:6379/0")
+
+    @property
+    def cache_ttl(self) -> int:
+        return self._get("cache", "ttl_seconds", default=300)
+
+    # ── 限流 ──
+
+    @property
+    def rate_limit_user_per_minute(self) -> int:
+        return self._get("rate_limit", "user_per_minute", default=30)
+
+    @property
+    def rate_limit_ip_per_minute(self) -> int:
+        return self._get("rate_limit", "ip_per_minute", default=100)
+
+    # ── 向量存储 ──
+
+    @property
+    def vector_store_type(self) -> str:
+        return self._get("vector_store", "type", default="chromadb")
+
+    @property
+    def vector_store_persist_dir(self) -> str:
+        return _resolve_path(self._get("vector_store", "persist_dir", default="backend/db/chroma"))
 
     # ── Web ──
 

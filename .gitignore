@@ -40,6 +40,7 @@ chroma/
 *.spec
 build/
 dist/
+!frontend/dist/
 
 # Test
 .pytest_cache/

@@ -1,0 +1,16 @@
+{
+  "name": "智慧问数系统",
+  "short_name": "智慧问数",
+  "description": "企业级 NL2SQL 智能数据查询平台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f5",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/vite.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}

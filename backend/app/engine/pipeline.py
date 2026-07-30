@@ -564,8 +564,8 @@ def _auto_mom(db, metric: dict, current_value, snapshot_ids: list = None) -> dic
                 "growth_rate": growth,
                 "direction": direction,
             }
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("Auto MoM calculation skipped: %s", e)
     return None
 
 def _suggest_drilldown(metric_name: str, rows: list) -> list[dict] | None:

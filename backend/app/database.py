@@ -1,6 +1,7 @@
 """数据库连接管理 — SQLite (dev) / PostgreSQL (prod)"""
 
 import sqlite3
+import time
 from pathlib import Path
 from contextlib import contextmanager
 
@@ -8,6 +9,26 @@ from .config import config
 from .core.logging import get_logger
 
 logger = get_logger(__name__)
+
+# 数据库重连配置
+RECONNECT_MAX_RETRIES = 3
+RECONNECT_BASE_DELAY = 0.2  # 秒 (exponential: 0.2, 0.4, 0.8)
+
+
+def _retry_on_db_error(fn, *args, **kwargs):
+    """数据库操作自动重连 (exponential backoff)"""
+    last_error = None
+    for attempt in range(RECONNECT_MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            last_error = e
+            if attempt < RECONNECT_MAX_RETRIES:
+                delay = RECONNECT_BASE_DELAY * (2 ** attempt)
+                logger.warning("DB error (attempt %d/%d), retrying in %.2fs: %s",
+                              attempt + 1, RECONNECT_MAX_RETRIES, delay, e)
+                time.sleep(delay)
+    raise last_error
 
 
 class DatabaseConnector:
@@ -33,12 +54,16 @@ class DatabaseConnector:
             conn.close()
 
     def execute(self, sql: str, params: tuple = ()) -> list[dict]:
-        """执行 SELECT, 返回字典列表"""
+        """执行 SELECT, 返回字典列表 (含自动重连)"""
         logger.debug("SQL: %s", sql[:200])
-        with self.connect() as conn:
-            cur = conn.cursor()
-            cur.execute(sql, params)
-            return [dict(row) for row in cur.fetchall()]
+
+        def _exec():
+            with self.connect() as conn:
+                cur = conn.cursor()
+                cur.execute(sql, params)
+                return [dict(row) for row in cur.fetchall()]
+
+        return _retry_on_db_error(_exec)
 
     def execute_one(self, sql: str, params: tuple = ()) -> dict | None:
         """执行 SELECT, 返回单条"""
@@ -179,21 +204,20 @@ class PostgresConnector:
     """PostgreSQL — 与 DatabaseConnector 接口兼容"""
 
     def __init__(self, dsn: str = None):
-        self.dsn = dsn or config.db_path
+        self.dsn = dsn or config.database_url
         self._pool = None
 
     def _get_pool(self):
         if self._pool is None:
             try:
                 from psycopg2 import pool
-                dsn = self.dsn if self.dsn.startswith("postgres") else (
-                    "host=localhost port=5432 dbname=smart_query "
-                    "user=smart_query password=smart_query"
+                dsn = self.dsn if self.dsn.startswith("postgres") else config.database_url
+                self._pool = pool.ThreadedConnectionPool(
+                    config.pg_pool_min, config.pg_pool_max, dsn
                 )
-                self._pool = pool.ThreadedConnectionPool(1, 10, dsn)
-                logger.info("PostgreSQL pool created")
+                logger.info("PostgreSQL pool created (min=%d, max=%d)", config.pg_pool_min, config.pg_pool_max)
             except ImportError:
-                raise RuntimeError("psycopg2 not installed")
+                raise RuntimeError("psycopg2 not installed. Run: pip install psycopg2-binary")
         return self._pool
 
     @contextmanager
@@ -207,8 +231,15 @@ class PostgresConnector:
         finally:
             pool.putconn(conn)
 
+    @staticmethod
+    def _to_pg(sql: str) -> str:
+        """安全替换 ? → %s（仅在 SQL 参数占位符位置）"""
+        import re
+        # 替换 SQL 中的 ? 占位符为 %s (排除字符串字面量中的 ?)
+        return re.sub(r'\?', '%s', sql)
+
     def execute(self, sql: str, params: tuple = ()) -> list[dict]:
-        pg_sql = sql.replace('?', '%s')
+        pg_sql = self._to_pg(sql)
         with self.connect() as conn:
             cur = conn.cursor()
             cur.execute(pg_sql, params)
@@ -224,11 +255,11 @@ class PostgresConnector:
     def execute_write(self, sql: str, params: tuple = ()) -> int:
         with self.connect() as conn:
             cur = conn.cursor()
-            cur.execute(sql.replace('?', '%s'), params)
+            cur.execute(self._to_pg(sql), params)
             return cur.rowcount
 
-    def insert_and_get_id(self, sql: str, params: tuple = ()) -> int:
-        pg_sql = sql.replace('?', '%s').rstrip(';') + ' RETURNING id'
+    def insert_and_get_id(self, sql: str, params: tuple = (), id_column: str = "id") -> int:
+        pg_sql = self._to_pg(sql).rstrip(';') + f' RETURNING {id_column}'
         with self.connect() as conn:
             cur = conn.cursor()
             cur.execute(pg_sql, params)
@@ -240,10 +271,20 @@ class PostgresConnector:
         return [r["table_name"] for r in rows]
 
     def table_exists(self, name: str) -> bool:
-        return self.execute_one("SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=%s", (name,)) is not None
+        return self.execute_one(
+            "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=%s",
+            (name,)
+        ) is not None
 
-    def get_table_schema(self, tn: str) -> list[dict]:
-        return self.execute("SELECT column_name AS name, data_type AS type FROM information_schema.columns WHERE table_name=%s ORDER BY ordinal_position", (tn,))
+    def get_table_schema(self, table_name: str) -> list[dict]:
+        return self.execute(
+            "SELECT column_name AS name, data_type AS type "
+            "FROM information_schema.columns "
+            "WHERE table_name=%s ORDER BY ordinal_position",
+            (table_name,)
+        )
+
+    # ── 快照查询 ──
 
     def get_snapshots(self) -> list[dict]:
         return self.execute("SELECT * FROM data_snapshots ORDER BY data_period")
@@ -251,22 +292,60 @@ class PostgresConnector:
     def get_latest_snapshot(self) -> dict | None:
         return self.execute_one("SELECT * FROM data_snapshots ORDER BY ingestion_time DESC LIMIT 1")
 
+    def get_snapshots_by_ids(self, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        placeholders = ",".join(["%s"] * len(ids))
+        return self.execute(
+            f"SELECT * FROM data_snapshots WHERE snapshot_id IN ({placeholders})",
+            tuple(ids),
+        )
+
+    def get_snapshots_by_period(self, period: str) -> list[dict]:
+        return self.execute(
+            "SELECT * FROM data_snapshots WHERE data_period = %s", (period,)
+        )
+
+    # ── 用户查询 ──
+
     def get_all_users(self) -> list[dict]:
         return self.execute("SELECT * FROM users ORDER BY user_id")
 
     def get_user_by_username(self, username: str) -> dict | None:
-        return self.execute_one("SELECT * FROM users WHERE username=%s", (username,))
+        return self.execute_one("SELECT * FROM users WHERE username=%s AND is_active=1", (username,))
+
+    def get_user_by_id(self, user_id: int) -> dict | None:
+        return self.execute_one("SELECT * FROM users WHERE user_id=%s", (user_id,))
+
+    # ── 查询日志 ──
 
     def get_query_history(self, user_id: int = None, limit: int = 50) -> list[dict]:
         if user_id:
-            return self.execute("SELECT * FROM query_logs WHERE user_id=%s ORDER BY created_at DESC LIMIT %s", (user_id, limit))
-        return self.execute("SELECT * FROM query_logs ORDER BY created_at DESC LIMIT %s", (limit,))
+            return self.execute(
+                "SELECT * FROM query_logs WHERE user_id=%s ORDER BY created_at DESC LIMIT %s",
+                (user_id, limit)
+            )
+        return self.execute(
+            "SELECT * FROM query_logs ORDER BY created_at DESC LIMIT %s", (limit,)
+        )
 
     def log_query(self, **kwargs) -> int:
-        fields = ["user_id","username","role","original_query","cleaned_query","generated_sql","intent","complexity","exec_time_ms","row_count","status","error_message","snapshot_ids"]
+        fields = ["user_id","username","role","original_query","cleaned_query",
+                   "generated_sql","intent","complexity","exec_time_ms",
+                   "row_count","status","error_message","snapshot_ids"]
         vals = [kwargs.get(f) for f in fields]
-        ph = ",".join(["%s"]*len(fields))
-        return self.insert_and_get_id(f"INSERT INTO query_logs ({','.join(fields)}) VALUES ({ph})", tuple(vals))
+        ph = ",".join(["%s"] * len(fields))
+        return self.insert_and_get_id(
+            f"INSERT INTO query_logs ({','.join(fields)}) VALUES ({ph})",
+            tuple(vals),
+            id_column="id",
+        )
 
-    def save_feedback(self, query_log_id: int, user_id: int, rating: str, comment: str = "", suggested_sql: str = "") -> int:
-        return self.insert_and_get_id("INSERT INTO query_feedback (query_log_id,user_id,rating,comment,suggested_sql) VALUES (%s,%s,%s,%s,%s)", (query_log_id,user_id,rating,comment,suggested_sql))
+    def save_feedback(self, query_log_id: int, user_id: int, rating: str,
+                      comment: str = "", suggested_sql: str = "") -> int:
+        return self.insert_and_get_id(
+            "INSERT INTO query_feedback (query_log_id,user_id,rating,comment,suggested_sql) "
+            "VALUES (%s,%s,%s,%s,%s)",
+            (query_log_id, user_id, rating, comment, suggested_sql),
+            id_column="id",
+        )

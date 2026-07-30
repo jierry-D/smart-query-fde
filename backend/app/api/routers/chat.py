@@ -3,7 +3,7 @@
 import json
 import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...core.deps import get_current_user
 from ...core.security import build_data_scope_sql, get_data_scope
@@ -157,7 +157,7 @@ def _get_db():
 # ── SSE 流式查询 ──
 
 @router.post("/chat")
-def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
+def chat(req: ChatRequest, request: Request, user: dict = Depends(get_current_user)):
     """
     处理自然语言查询或 / 命令.
 
@@ -173,16 +173,94 @@ def chat(req: ChatRequest, user: dict = Depends(get_current_user)):
     if user_input.startswith("/"):
         return _handle_command(user_input, db, user)
 
-    # 自然语言查询
-    return _handle_query(user_input, db, user)
+    # 检查是否请求 SSE
+    accept_header = request.headers.get("accept", "")
+    use_sse = "text/event-stream" in accept_header
+
+    if use_sse:
+        return _handle_sse(user_input, db, user)
+    else:
+        return _handle_query(user_input, db, user)
+
+
+def _handle_sse(query: str, db, user: dict):
+    """SSE 流式查询 — 实时推送 Pipeline 进度"""
+    import asyncio
+    import threading
+    import json as json_module
+    from sse_starlette.sse import EventSourceResponse
+
+    async def sse_generator():
+        event_queue = asyncio.Queue()
+
+        def run_pipeline():
+            try:
+                result = _handle_query(query, db, user)
+                stages = result.get("process", [])
+
+                for stage in stages:
+                    try:
+                        loop = asyncio.new_event_loop()
+                        loop.run_until_complete(
+                            event_queue.put({"event": "stage", "data": stage})
+                        )
+                        loop.close()
+                    except Exception:
+                        pass
+
+                output = {k: v for k, v in result.items()
+                          if k not in ("process", "_query")}
+                try:
+                    loop = asyncio.new_event_loop()
+                    loop.run_until_complete(
+                        event_queue.put({"event": "result", "data": output})
+                    )
+                    loop.close()
+                except Exception:
+                    pass
+            except Exception as e:
+                try:
+                    loop = asyncio.new_event_loop()
+                    loop.run_until_complete(
+                        event_queue.put({"event": "error", "data": {"message": str(e)}})
+                    )
+                    loop.close()
+                except Exception:
+                    pass
+            finally:
+                try:
+                    loop = asyncio.new_event_loop()
+                    loop.run_until_complete(event_queue.put(None))
+                    loop.close()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=run_pipeline)
+        thread.start()
+
+        yield {"event": "start", "data": json_module.dumps({"query": query})}
+
+        while True:
+            item = await event_queue.get()
+            if item is None:
+                break
+            yield item
+
+        thread.join()
+        yield {"event": "done", "data": json_module.dumps({"status": "complete"})}
+
+    return EventSourceResponse(sse_generator())
 
 
 # ── 查询处理 ──
 
 def _handle_query(query: str, db: DatabaseConnector, user: dict) -> dict:
-    """完整的 NL2SQL 查询流水线 — 使用 Pipeline + Governance 模块"""
+    """完整的 NL2SQL 查询流水线 — 支持 Agent 模式"""
 
-    # 尝试初始化 LLM (可选, 无 Key 时降级为模板)
+    # 检测是否为报告请求
+    is_report = any(kw in query for kw in ["生成报告", "分析报告", "经营分析", "销售分析", "区域分析", "商机分析"])
+
+    # 尝试初始化 LLM
     llm = None
     try:
         from ...llm.deepseek import get_llm
@@ -190,29 +268,99 @@ def _handle_query(query: str, db: DatabaseConnector, user: dict) -> dict:
     except Exception:
         pass
 
-    # 使用统一流水线
+    # Agent 模式: 报告 / 分析类 / LLM 可用时
+    if is_report and llm:
+        return _handle_agent_query(query, db, user, llm, is_report)
+
+    # Pipeline 模式 (原有逻辑)
+    return _handle_pipeline_query(query, db, user, llm)
+
+
+def _handle_pipeline_query(query: str, db: DatabaseConnector, user: dict, llm=None) -> dict:
+    """使用传统 Pipeline 处理查询"""
     from ...engine.pipeline import NL2SQLPipeline
     pipeline = NL2SQLPipeline(db, llm_provider=llm)
     result = pipeline.run(query, user)
+    _log_query(db, user, query, result)
+    result["_query"] = query
+    return result
 
-    # 记录查询日志
+
+def _handle_agent_query(query: str, db: DatabaseConnector, user: dict, llm, is_report: bool) -> dict:
+    """使用 Agent 体系处理查询"""
+    import asyncio
+
+    from ...agents.base import AgentContext, AgentOrchestrator
+    from ...agents.intent_agent import IntentAgent
+    from ...agents.planner_agent import PlannerAgent
+    from ...agents.sql_agent import SQLAgent
+    from ...agents.execute_agent import ExecuteAgent
+    from ...agents.interpret_agent import InterpretAgent
+    from ...agents.clarify_agent import ClarifyAgent
+    from ...agents.report_agent import ReportAgent
+
+    orchestrator = AgentOrchestrator()
+    orchestrator.register(IntentAgent())
+    orchestrator.register(PlannerAgent())
+    orchestrator.register(SQLAgent())
+    orchestrator.register(ExecuteAgent())
+    orchestrator.register(InterpretAgent())
+    orchestrator.register(ClarifyAgent())
+    orchestrator.register(ReportAgent())
+
+    async def _run():
+        ctx = AgentContext(query=query, user=user, db=db, llm=llm)
+
+        if is_report:
+            ctx.is_report = True
+            ctx.report_topic = query
+            plan_result = await orchestrator.get("planner")._timed_run(ctx)
+            if not plan_result.success:
+                return {"type": "error", "message": plan_result.error, "process": ctx.stages}
+            report_result = await orchestrator.get("report")._timed_run(ctx)
+            if not report_result.success:
+                return {"type": "error", "message": report_result.error, "process": ctx.stages}
+            return {
+                "type": "report",
+                "report": report_result.data.get("report", ""),
+                "sections": report_result.data.get("sections", []),
+                "queries_executed": report_result.data.get("queries_executed", 0),
+                "process": ctx.stages,
+            }
+        else:
+            return await orchestrator.run_query(query, user, db, llm)
+
     try:
+        loop = asyncio.new_event_loop()
+        result = loop.run_until_complete(_run())
+        loop.close()
+        _log_query(db, user, query, result)
+        result["_query"] = query
+        return result
+    except Exception as e:
+        import logging
+        logger = logging.getLogger('smart_query.backend.app.api.routers.chat')
+        logger.warning("Agent mode failed (%s), falling back to Pipeline", e)
+        return _handle_pipeline_query(query, db, user, llm)
+
+
+def _log_query(db, user: dict, query: str, result: dict):
+    """记录查询日志 (非阻塞)"""
+    try:
+        import json
         db.log_query(
             user_id=user["user_id"], username=user["username"],
             role=user["role"], original_query=query,
             cleaned_query=query, generated_sql=result.get("sql", ""),
-            intent=result.get("entity_tags", [{}])[0].get("type", "") if result.get("entity_tags") else "",
-            exec_time_ms=result.get("exec_ms", 0), row_count=result.get("row_count", 0),
-            status="success" if result.get("type") not in ("error", "pending") else result.get("type"),
+            intent="",
+            exec_time_ms=result.get("elapsed_ms", 0),
+            row_count=result.get("row_count", 0),
+            status="success" if result.get("type") not in ("error", "pending", "clarify") else result.get("type"),
             error_message=result.get("message", ""),
             snapshot_ids=json.dumps([s.get("snapshot_id") for s in db.get_snapshots()[:1]]) if db.get_snapshots() else None,
         )
     except Exception:
-        pass  # 日志失败不影响主流程
-
-    # 附带原始查询供前端反馈使用
-    result["_query"] = query
-    return result
+        pass
 
 
 # ── 命令处理 ──

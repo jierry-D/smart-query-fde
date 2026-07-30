@@ -91,6 +91,9 @@ def build_data_scope_sql(user: dict, table_alias: str = "") -> str:
     """
     构建数据范围 SQL WHERE 子句.
 
+    安全说明: 值来自数据库中已存储的用户属性 (department/region),
+    不是用户直接输入, 且经过字段白名单 + 单引号转义双重防护.
+
     Args:
         user: 用户字典
         table_alias: 表别名前缀 (如 "b.")
@@ -98,15 +101,27 @@ def build_data_scope_sql(user: dict, table_alias: str = "") -> str:
     Returns:
         str: SQL WHERE 条件, 如 "b.department = '数字政务事业部' AND b.region = '南宁市'"
     """
+    import re
     scope = get_data_scope(user)
     if not scope:
         return "1=1"
 
+    # 字段白名单: 只允许这两个已知字段
+    ALLOWED_FIELDS = {"department", "region"}
+
     prefix = f"{table_alias}." if table_alias else ""
     conditions = []
     for field, value in scope.items():
+        if field not in ALLOWED_FIELDS:
+            continue
+        # 清理字段名 (防止非法字符)
+        safe_field = re.sub(r'[^a-zA-Z_]', '', field)
+        # 转义值中的单引号 (标准 SQL 转义)
         safe_value = str(value).replace("'", "''")
-        conditions.append(f"{prefix}{field} = '{safe_value}'")
+        conditions.append(f"{prefix}{safe_field} = '{safe_value}'")
+
+    if not conditions:
+        return "1=1"
 
     return " AND ".join(conditions)
 

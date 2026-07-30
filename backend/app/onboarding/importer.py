@@ -174,9 +174,9 @@ def _infer_column_types(headers: list, data_rows: list) -> dict:
             if isinstance(v, (int, float)): return v
             if isinstance(v, str):
                 try: return int(v)
-                except: pass
+                except (ValueError, TypeError): pass
                 try: return float(v)
-                except: pass
+                except (ValueError, TypeError): pass
             return v
 
         # 检测日期

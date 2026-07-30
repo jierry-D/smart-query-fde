@@ -16,12 +16,38 @@ services:
       - ./config.yaml:/app/config.yaml
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000/api/status"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
       interval: 30s
       timeout: 5s
       retries: 3
 
-  # 可选: ChromaDB 向量服务
+  # Redis 缓存 (可选 — profile: full)
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # PostgreSQL (可选 — profile: full)
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: smart_query
+      POSTGRES_USER: smart_query
+      POSTGRES_PASSWORD: smart_query
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    profiles:
+      - full
+
+  # ChromaDB 向量服务 (可选 — profile: full)
   chromadb:
     image: chromadb/chroma:latest
     ports:
@@ -31,3 +57,7 @@ services:
     restart: unless-stopped
     profiles:
       - full
+
+volumes:
+  redis_data:
+  pg_data:

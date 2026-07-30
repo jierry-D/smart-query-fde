@@ -2,6 +2,8 @@
 
 import hashlib
 import time
+import json
+from collections import OrderedDict
 
 from ..core.logging import get_logger
 from ..config import config
@@ -10,12 +12,12 @@ logger = get_logger(__name__)
 
 
 class ResultCache:
-    """结果缓存 (内存 LRU + TTL)"""
+    """结果缓存 (内存 LRU + TTL, O(1) 淘汰)"""
 
     def __init__(self, max_size: int = 500):
         self.max_size = max_size
-        self.ttl = config.governance_cache_ttl  # 默认 300s
-        self._cache: dict[str, dict] = {}  # key → {result, ts}
+        self.ttl = config.governance_cache_ttl
+        self._cache: OrderedDict[str, dict] = OrderedDict()
 
     def apply(self, sql: str) -> dict:
         """
@@ -28,6 +30,8 @@ class ResultCache:
             entry = self._cache[key]
             if time.time() - entry["ts"] < self.ttl:
                 logger.debug("Cache hit: %s...", key[:60])
+                # Move to end (most recently used)
+                self._cache.move_to_end(key)
                 return {"cache_hit": True, "cached_result": entry["result"], "cache_key": key}
             else:
                 del self._cache[key]
@@ -35,13 +39,15 @@ class ResultCache:
         return {"cache_hit": False, "cached_result": None, "cache_key": key}
 
     def store(self, key: str, result: dict):
-        """存入缓存"""
+        """存入缓存 (LRU 淘汰)"""
         if len(self._cache) >= self.max_size:
-            # 淘汰最老的条目
-            oldest = min(self._cache.items(), key=lambda x: x[1]["ts"])
-            del self._cache[oldest[0]]
-
+            # O(1) 淘汰最旧条目 (OrderedDict.popitem with last=False)
+            oldest_key, _ = self._cache.popitem(last=False)
+            logger.debug("Cache eviction: %s", oldest_key[:60])
         self._cache[key] = {"result": result, "ts": time.time()}
+
+    def clear(self):
+        self._cache.clear()
 
     @staticmethod
     def _normalize(sql: str) -> str:
@@ -51,3 +57,72 @@ class ResultCache:
         normalized = re.sub(r'\s+', ' ', normalized)
         normalized = normalized.lower()
         return hashlib.md5(normalized.encode()).hexdigest()
+
+
+# ═══════════════════════════════════════════
+# Redis 缓存层
+# ═══════════════════════════════════════════
+
+class RedisCache:
+    """Redis 分布式缓存 — 与 ResultCache 接口兼容"""
+
+    def __init__(self, redis_url: str = None, ttl: int = None):
+        self.redis_url = redis_url or config.cache_redis_url
+        self.ttl = ttl or config.cache_ttl
+        self._client = None
+
+    @property
+    def client(self):
+        if self._client is None:
+            try:
+                import redis
+                self._client = redis.Redis.from_url(
+                    self.redis_url,
+                    socket_connect_timeout=3,
+                    socket_timeout=3,
+                    decode_responses=False,
+                )
+                self._client.ping()  # 验证连接
+                logger.info("Redis cache connected: %s", self.redis_url)
+            except ImportError:
+                raise RuntimeError("redis-py not installed. Run: pip install redis")
+            except Exception as e:
+                logger.warning("Redis unavailable (%s), falling back to memory cache", e)
+                raise
+        return self._client
+
+    def apply(self, sql: str) -> dict:
+        key = self._normalize(sql)
+        try:
+            raw = self.client.get(key)
+            if raw:
+                result = json.loads(raw)
+                logger.debug("Redis cache hit: %s...", key[:60])
+                return {"cache_hit": True, "cached_result": result, "cache_key": key}
+        except Exception as e:
+            logger.debug("Redis get error: %s", e)
+        return {"cache_hit": False, "cached_result": None, "cache_key": key}
+
+    def store(self, key: str, result: dict):
+        try:
+            self.client.setex(key, self.ttl, json.dumps(result, ensure_ascii=False))
+        except Exception as e:
+            logger.debug("Redis set error: %s", e)
+
+    @staticmethod
+    def _normalize(sql: str) -> str:
+        import re
+        normalized = sql.strip()
+        normalized = re.sub(r'\s+', ' ', normalized)
+        normalized = normalized.lower()
+        return f"sq:cache:{hashlib.md5(normalized.encode()).hexdigest()}"
+
+
+def get_cache() -> ResultCache:
+    """工厂函数: 根据配置返回缓存实例"""
+    if config.cache_type == "redis":
+        try:
+            return RedisCache()
+        except Exception:
+            logger.info("Falling back to memory cache")
+    return ResultCache()

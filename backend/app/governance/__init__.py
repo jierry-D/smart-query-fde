@@ -4,7 +4,7 @@ from .layer1_auth import AuthFilter
 from .layer2_sql import SQLSecurityChecker
 from .layer3_resource import ResourceEstimator
 from .layer4_exec import ExecutionGuard
-from .layer5_cache import ResultCache
+from .layer5_cache import ResultCache, get_cache
 from ..core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -18,7 +18,7 @@ class GovernanceManager:
         self.layer2 = SQLSecurityChecker()
         self.layer3 = ResourceEstimator(connector)
         self.layer4 = ExecutionGuard()
-        self.layer5 = ResultCache()
+        self.layer5 = get_cache()
 
     def apply(self, sql: str, user: dict) -> dict:
         """
